@@ -1477,6 +1477,72 @@ setup_starship_init() {
     ok "starship -> $(command -v starship)"
 }
 
+# Neofetch auto-run snippet, kept in sync in ~/.bash_profile AND ~/.bashrc on
+# every run (same pattern as setup_starship_init): binary present -> snippet
+# ensured in both files; binary missing (user uninstalled) -> snippet removed
+# from both so shells stay clean. Also repairs the legacy variant found in the
+# wild, which lacks the closing `fi` (dangling if-block swallowing the rest
+# of the file): any block from the start marker to the end marker is replaced
+# by the canonical closed form.
+setup_neofetch_init() {
+    if [ -z "${BASH_VERSION:-}" ]; then
+        warn "Installer is not running under bash; skipping neofetch shell init sync"
+        return 0
+    fi
+
+    local start_marker='# >>> neofetch on Termux start >>>'
+    local end_marker='# <<< neofetch on Termux start <<<'
+    local f removed=0
+    # Strip any existing neofetch block (closed or legacy unclosed form) via
+    # an awk range from the start marker to the end marker.
+    _strip_neofetch_block() {
+        [ -f "$1" ] || return 1
+        grep -qxF "$start_marker" "$1" 2>/dev/null || return 1
+        awk -v s="$start_marker" -v e="$end_marker" \
+            '$0==s{skip=1; next} skip&&$0==e{skip=0; next} !skip' \
+            "$1" >"$1.tmp" 2>/dev/null && mv "$1.tmp" "$1"
+    }
+
+    if ! command -v neofetch >/dev/null 2>&1; then
+        for f in "$BASH_PROFILE" "$BASHRC"; do
+            if _strip_neofetch_block "$f"; then
+                info "Removed neofetch init from $f (neofetch not installed)"
+                removed=1
+            fi
+        done
+        [ "$removed" -eq 0 ] && info "Neofetch not installed; nothing to clean up"
+        return 0
+    fi
+
+    for f in "$BASH_PROFILE" "$BASHRC"; do
+        if grep -qxF "$start_marker" "$f" 2>/dev/null \
+           && grep -qxF 'fi' "$f" 2>/dev/null; then
+            # Block present; verify it is the closed form (fi between markers).
+            if awk -v s="$start_marker" -v e="$end_marker" \
+                '$0==s{inb=1; hasfi=0; next} inb&&$0=="fi"{hasfi=1} $0==e{if(hasfi)ok=1; inb=0} END{exit !ok}' \
+                "$f" 2>/dev/null; then
+                info "Neofetch init already present in $f"
+                continue
+            fi
+        fi
+        _strip_neofetch_block "$f" 2>/dev/null || true
+        [ -e "$f" ] || : >"$f"
+        {
+            printf '\n%s\n' "$start_marker"
+            # shellcheck disable=SC2016  # literal snippet for the rc files, must not expand
+            printf '%s\n' 'if [[ $- == *i* && -z "$NEOFETCH_SHOWN" ]] && command -v neofetch >/dev/null 2>&1; then'
+            # shellcheck disable=SC2016
+            printf '%s\n' '  neofetch --off'
+            # shellcheck disable=SC2016
+            printf '%s\n' '  export NEOFETCH_SHOWN=1'
+            printf '%s\n' 'fi'
+            printf '%s\n' "$end_marker"
+        } >>"$f"
+        info "Added neofetch init to $f"
+    done
+    ok "neofetch -> $(command -v neofetch)"
+}
+
 install_pkg_tools() {
     # The probe runs before the menu; for non-menu runs (-y / no TTY /
     # short terminal) PKG_STATUS is empty, so probe here to know the state.
@@ -1545,6 +1611,8 @@ install_pkg_tools() {
     # ensures the snippet in both rc files when installed, and removes it
     # from both when the user uninstalled starship.
     setup_starship_init
+    # Neofetch snippet sync: same unconditional rule as starship.
+    setup_neofetch_init
 }
 
 install_pip_tools() {

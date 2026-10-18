@@ -125,6 +125,26 @@ Legacy unguarded snippets are upgraded in place. If starship is not installed
 shells stay clean. The sync only runs when the installer itself runs under
 bash.
 
+When `neofetch` is installed, the installer keeps its auto-run snippet in
+sync in **both** `~/.bash_profile` and `~/.bashrc` on every run (same
+unconditional rule as starship). The snippet runs `neofetch --off` once per
+shell tree (`NEOFETCH_SHOWN` guard) in interactive shells:
+
+```bash
+# >>> neofetch on Termux start >>>
+if [[ $- == *i* && -z "$NEOFETCH_SHOWN" ]] && command -v neofetch >/dev/null 2>&1; then
+  neofetch --off
+  export NEOFETCH_SHOWN=1
+fi
+# <<< neofetch on Termux start <<<
+```
+
+If neofetch is not installed (e.g. the user uninstalled it and did not select
+it), the snippet is removed from both files. The sync also repairs the legacy
+variant found in the wild, which lacks the closing `fi` — any block between
+the start/end markers is replaced by the canonical closed form above. Only
+runs when the installer itself runs under bash.
+
 ### Options (listed last, after the pkg tools)
 
 | Toggle          | Effect                                                              |
