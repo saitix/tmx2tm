@@ -197,6 +197,11 @@ declare -A COMP_HINT=(
 # Runtime state / options.
 declare -A SELECTED=()
 for _c in "${ALL_COMPONENTS[@]}"; do SELECTED[$_c]=1; done
+# Set to 1 when the interactive menu actually ran and the user confirmed a
+# selection. install_pkg_tools uses it to tell an explicit menu tick of a
+# green (current) tool — forced reinstall — apart from -y / fallback runs
+# where everything is selected by default and green tools must be skipped.
+MENU_CONFIRMED=0
 
 # Kilo / kilocode config locations (the kilocode-cli uses these same paths).
 KILO_CONFIG_DIR="$HOME/.config/kilo"
@@ -670,15 +675,23 @@ refresh_menu_colors() {
 
 # Re-probe pkg status and rebuild the row colors. Wired as TUI_REFRESH_FN so
 # colors update right after the 'u' action without leaving the menu.
+# Newly-current (green) tools are also unchecked: they need no install, and
+# this keeps the toggles consistent with the colors after an update.
 refresh_pkg_status() {
     probe_pkg_status
     refresh_menu_colors
-    # Refresh the pkg-row descriptions' status suffixes in place.
+    # Refresh the pkg-row descriptions' status suffixes and toggle states in
+    # place. Green tools go off; missing/yellow tools keep the user's toggle.
     local i
     for ((i = 0; i < n; i++)); do
         [ "${kinds[$i]}" = item ] || continue
         case " ${PKG_TOOL_COMPONENTS[*]} " in
-            *" ${tags[i]} "*) descs[i]="${COMP_DESC[${tags[i]}]}$(pkg_status_suffix "${tags[i]}")" ;;
+            *" ${tags[i]} "*)
+                descs[i]="${COMP_DESC[${tags[i]}]}$(pkg_status_suffix "${tags[i]}")"
+                if [ "${PKG_STATUS[${tags[i]}]:-missing}" = "current" ]; then
+                    states[i]="off"
+                fi
+                ;;
         esac
     done
 }
@@ -696,7 +709,14 @@ show_menu() {
     info "Checking installed pkg tools..."
     probe_pkg_status
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
-        items+=("$c|${COMP_DESC[$c]}$(pkg_status_suffix "$c")|on")
+        # Green (installed+latest) tools default to off: re-installing them is
+        # pointless, and this keeps the toggles consistent with the colors.
+        # The user can still tick one to force a reinstall at install time.
+        if [ "${PKG_STATUS[$c]:-missing}" = "current" ]; then
+            items+=("$c|${COMP_DESC[$c]}$(pkg_status_suffix "$c")|off")
+        else
+            items+=("$c|${COMP_DESC[$c]}$(pkg_status_suffix "$c")|on")
+        fi
     done
     items+=("apt_upgrade|OPTION: apt update & upgrade before installing (recommended)|$([ "$APT_UPGRADE" -eq 1 ] && echo on || echo off)")
     items+=("no_storage|OPTION: skip termux-setup-storage (shared storage)|$([ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off)")
@@ -731,8 +751,7 @@ show_menu() {
     fi
 
     local result
-    if ! tui_checklist "tmx2tm.sh v$SCRIPT_VERSION - select components" result "${items[@]}"; then
-        echo
+    if ! tui_checklist "tmx2tm.sh v$SCRIPT_VERSION - select components" result "${items[@]}"; then        echo
         info "Cancelled."
         exit 130
     fi
@@ -782,6 +801,7 @@ show_menu() {
         exit 0
     fi
 
+    MENU_CONFIRMED=1
     clear 2>/dev/null || true
 }
 
@@ -882,9 +902,8 @@ setup_starship_init() {
 }
 
 install_pkg_tools() {
-    # Skip selected tools already installed at the latest version (green in the
-    # menu). The probe runs before the menu; for non-menu runs (-y / no TTY /
-    # short terminal) PKG_STATUS is empty, so probe here to get the same skip.
+    # The probe runs before the menu; for non-menu runs (-y / no TTY /
+    # short terminal) PKG_STATUS is empty, so probe here to know the state.
     # update_apt runs first and refreshes the index, so probe AFTER it to avoid
     # trusting a stale "latest". A fresh probe costs ~0.2s for all pkg tools.
     if [ "${#PKG_STATUS[@]}" -eq 0 ]; then
@@ -892,27 +911,48 @@ install_pkg_tools() {
     fi
 
     local pkgs=()
+    local reinstall_pkgs=()
     local skipped=()
     local c p bin
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
         is_selected "$c" || continue
         if [ "${PKG_STATUS[$c]:-missing}" = "current" ]; then
-            skipped+=("$c")
+            if [ "$MENU_CONFIRMED" -eq 1 ]; then
+                # Explicitly ticked green tool: the user wants a reinstall.
+                for p in ${PKG_COMPONENT[$c]}; do reinstall_pkgs+=("$p"); done
+            else
+                # -y / fallback run: everything is selected by default, so a
+                # green tool means skip, not reinstall.
+                skipped+=("$c")
+            fi
             continue
         fi
         for p in ${PKG_COMPONENT[$c]}; do pkgs+=("$p"); done
+    done
+    for c in "${PKG_TOOL_COMPONENTS[@]}"; do
+        is_selected "$c" && continue
+        if [ "${PKG_STATUS[$c]:-missing}" = "current" ]; then
+            skipped+=("$c")
+        fi
     done
 
     if [ "${#skipped[@]}" -gt 0 ]; then
         info "Already installed (latest), skipping: ${skipped[*]}"
     fi
-    if [ "${#pkgs[@]}" -eq 0 ]; then
-        info "All selected pkg tools are already installed at the latest version"
-    else
+    if [ "${#pkgs[@]}" -gt 0 ]; then
         step "Installing pkg tools"
         info "pkg install: ${pkgs[*]}"
         pkg install -y "${pkgs[@]}" || die "Failed to install pkg tools"
         ok "pkg tools installed"
+    fi
+    if [ "${#reinstall_pkgs[@]}" -gt 0 ]; then
+        step "Reinstalling explicitly selected pkg tools"
+        info "pkg reinstall: ${reinstall_pkgs[*]}"
+        pkg reinstall -y "${reinstall_pkgs[@]}" || die "Failed to reinstall pkg tools"
+        ok "pkg tools reinstalled"
+    fi
+    if [ "${#pkgs[@]}" -eq 0 ] && [ "${#reinstall_pkgs[@]}" -eq 0 ]; then
+        info "All selected pkg tools are already installed at the latest version"
     fi
 
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do

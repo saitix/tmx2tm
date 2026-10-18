@@ -188,12 +188,15 @@ menu. "Latest" is read from the apt package index (`apt list --upgradable`),
 so it reflects the last `apt update` — a stale index may show green for a
 tool that has a newer version upstream.
 
-At install time, selected pkg tools that are already at the latest version
-(green) are skipped — only missing or upgradable tools are passed to
-`pkg install`. The skip list is printed, and if everything selected is
-already current the install step is omitted entirely. For non-menu runs
-(`-y` / no TTY) the status is probed at the pkg stage, after `apt update`,
-so the same skip applies.
+At install time, green tools (already at the latest version) are not
+reinstalled: in the menu they default to **unchecked**, so confirming without
+touching them skips the pointless reinstall and the toggles stay consistent
+with the colors. If you tick a green tool anyway, it is force-reinstalled via
+`pkg reinstall` at install time. In non-menu runs (`-y` / no TTY) everything
+is selected by default, so green tools are skipped there instead of
+reinstalled. The skip list is printed, and if nothing needs installing the
+install step is omitted entirely. For non-menu runs the status is probed at
+the pkg stage, after `apt update`, so "latest" is judged on a fresh index.
 
 ## Update (menu key 'u')
 
