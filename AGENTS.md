@@ -64,3 +64,7 @@ Minimal instructions for agents working in this repo.
      installed→current, missing→missing — never broken. Gate new red logic
      on `NET_GITHUB` / `NET_PYPI` accordingly.
    - The `u`-action refresh is `refresh_menu_status` (both groups + toggles).
+   - The text fallback menu signals rc 42 after `p`; `show_menu` loops to
+     rebuild and re-probe. NEVER re-exec "$0" to reload: under
+     `bash <(curl ...)` $0 is an exhausted /dev/fd pipe, so exec runs an
+     empty script and exits silently. In-process loops only.

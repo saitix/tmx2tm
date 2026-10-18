@@ -1004,6 +1004,12 @@ refresh_menu_status() {
 show_menu() {
     export TERM="${TERM:-xterm-256color}"
 
+    # Loop so the text fallback can reload the full menu after 'p' installs
+    # the prerequisites: items are rebuilt and re-probed every pass, and the
+    # TUI is retried (it usually fits now that tput/ncurses-utils exists).
+    # NOTE: never re-exec "$0" here — under `bash <(curl ...)` $0 is a dead
+    # /dev/fd pipe, so exec would run an empty script and exit silently.
+    while true; do
     local -a items=()
     local c
     items+=("sep|3rd-party tools")
@@ -1057,7 +1063,7 @@ show_menu() {
     # so if the block is taller than the screen the display corrupts. Fall back
     # to a plain numbered menu (no cursor movement, no tput) instead of
     # skipping straight into installing everything.
-    local rows est legend_extra=0
+    local rows est legend_extra=0 text_rc=0
     rows=$(tput lines 2>/dev/null) || rows=""
     case "$rows" in ''|*[!0-9]*) rows="${LINES:-24}" ;; esac
     [ -n "$TUI_LEGEND" ] && legend_extra=1
@@ -1069,7 +1075,13 @@ show_menu() {
         TUI_EXTRA_STYLE=()
         TUI_ITEM_COLOR=(); TUI_REFRESH_FN=""; TUI_LEGEND=""
         show_text_menu "${items[@]}"
-        return $?
+        text_rc=$?
+        # 42 = 'p' installed the prerequisites: loop back, rebuild items with
+        # fresh probes, and retry the TUI (or the text menu without 'p').
+        if [ "$text_rc" -eq 42 ]; then
+            continue
+        fi
+        return "$text_rc"
     fi
 
     local result
@@ -1088,6 +1100,8 @@ show_menu() {
     TUI_LEGEND=""
 
     apply_menu_result "$result"
+    return 0
+    done
 }
 
 # Plain numbered fallback menu for terminals too short for the interactive
@@ -1158,15 +1172,19 @@ show_text_menu() {
             s|S) menu_save_kilo ;;
             u|U) menu_update_tools_no_tui ;;
             p|P)
+                # Already installed (p hidden this pass): don't reinstall in
+                # a loop, just stay in the menu.
+                if ! prereqs_missing; then
+                    warn "Prerequisites are already installed"
+                    continue
+                fi
                 menu_install_prereqs
-                # Reload with full bells and whistles: prerequisites are in,
-                # so re-run the whole menu (fresh probes, colors, TUI if it
-                # fits now that tput/ncurses-utils exists). The outer
-                # show_menu call returns through here; exec replaces this
-                # shell so no stale state survives.
+                # Signal the show_menu loop (rc 42) to rebuild items with
+                # fresh probes and reopen the menu with full checks. No exec:
+                # under `bash <(curl ...)` $0 is a dead fd pipe, so exec
+                # would run an empty script and exit silently.
                 progress "Prerequisites installed — reloading the menu..."
-                # shellcheck disable=SC2086  # intentional word-splitting of extra passthrough args
-                exec bash "$0" ${TMX2TM_MENU_ARGS:-} --menu
+                return 42
                 ;;
             *)
                 for t in $line; do
