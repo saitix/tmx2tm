@@ -106,16 +106,24 @@ export GOPATH="$HOME/go"
 export PATH="$GOPATH/bin:$PATH"
 ```
 
-When `starship` is selected, the installer appends its init snippet to
-`~/.bash_profile` — but only if the installer itself runs under bash, and
-only if the snippet (or the `starship` binary check) is not already there:
+When `starship` is installed, the installer keeps its init snippet in sync in
+**both** `~/.bash_profile` and `~/.bashrc` on every run (zellij sources
+`~/.bashrc` for its panes even inside a login shell, so one file is not
+enough). The snippet evals at most once per shell tree — `STARSHIP_START_TIME`
+is set by starship's own init on first eval, so a second sourcing is a no-op
+instead of a double-rendered prompt:
 
 ```bash
-# Initialize Starship only if installed
-if command -v starship >/dev/null 2>&1; then
+# Initialize Starship only once, if installed
+if [ -z "$STARSHIP_START_TIME" ] && command -v starship >/dev/null 2>&1; then
     eval "$(starship init bash)"
 fi
 ```
+
+Legacy unguarded snippets are upgraded in place. If starship is not installed
+(e.g. the user uninstalled it), the snippet is removed from both files so
+shells stay clean. The sync only runs when the installer itself runs under
+bash.
 
 ### Options (listed last, after the pkg tools)
 

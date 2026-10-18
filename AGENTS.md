@@ -32,6 +32,12 @@ Minimal instructions for agents working in this repo.
    (syntax) and `shellcheck tmx2tm.sh` (lint; must be clean).
 5. **`.bashrc` rule.** Never append blindly — always use the existing
    `ensure_bashrc_line` helper so re-runs stay idempotent.
+   - `setup_starship_init` is the exception pattern: it syncs the guarded
+     snippet in BOTH `~/.bash_profile` and `~/.bashrc` on EVERY run
+     (zellij reads `.bashrc` inside login shells), upgrades the legacy
+     unguarded form, and REMOVES the snippet from both files when the
+     starship binary is gone. Marker: `# Initialize Starship only once,
+     if installed` + `STARSHIP_START_TIME` guard.
 6. **Target:** Termux on Android (aarch64) only. No `dialog`/`gum`
    dependencies; the menu is pure bash. Keep `$PREFIX`, `$HOME`, `pkg`
    assumptions intact.

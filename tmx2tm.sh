@@ -1380,38 +1380,73 @@ setup_golang_path() {
     info "Added GOPATH and \$GOPATH/bin to ~/.bashrc"
 }
 
-# Starship prompt init. Only touches ~/.bash_profile when the installer itself
-# runs under bash ($BASH_VERSION is set only by bash; $0/$SHELL are unreliable
-# — $SHELL is the login shell, not the running one). Otherwise the snippet
-# would never execute and would just litter a foreign shell's file.
-# The snippet is guarded twice: the file marker prevents duplicate appends on
-# re-runs, and the `command -v starship` check inside the snippet means shells
-# stay usable if starship is later uninstalled.
+# Starship prompt init, kept in sync in ~/.bash_profile AND ~/.bashrc on every
+# run (not just when starship is selected): zellij sources ~/.bashrc for its
+# panes even inside a login shell, so the snippet must live in both files.
+# The snippet evals at most once per shell tree: STARSHIP_START_TIME is set by
+# starship's own init on first eval, so a second sourcing (e.g. zellij reading
+# .bashrc after .bash_profile already ran) is a no-op instead of a
+# double-rendered prompt with double-registered keybindings.
+# Sync rule: binary present -> snippet ensured in both files (old unguarded
+# form upgraded in place); binary missing (user uninstalled) -> snippet
+# removed from both files so shells stay clean. Only touches the files when
+# the installer itself runs under bash ($BASH_VERSION is set only by bash).
 setup_starship_init() {
     if [ -z "${BASH_VERSION:-}" ]; then
-        warn "Installer is not running under bash; skipping starship ~/.bash_profile init"
+        warn "Installer is not running under bash; skipping starship shell init sync"
         return 0
     fi
+
+    local marker='# Initialize Starship only once, if installed'
+    local old_marker='# Initialize Starship only if installed'
+    local f
+    for f in "$BASH_PROFILE" "$BASHRC"; do
+        # Drop the legacy unguarded snippet (4 lines: marker, if, eval, fi)
+        # wherever it appears so it is replaced by the guarded form below.
+        # shellcheck disable=SC2016  # literal snippet lines, must not expand
+        if [ -f "$f" ] && grep -qxF "$old_marker" "$f" 2>/dev/null; then
+            grep -vxF -e "$old_marker" \
+                      -e 'if command -v starship >/dev/null 2>&1; then' \
+                      -e '    eval "$(starship init bash)"' \
+                      -e 'fi' "$f" >"$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
+            info "Upgraded legacy starship snippet in $f"
+        fi
+    done
 
     if ! command -v starship >/dev/null 2>&1; then
-        warn "starship binary not found after install; skipping ~/.bash_profile init"
+        # User uninstalled starship: remove the snippet from both files so the
+        # eval (and its guard) does not linger in new shells.
+        local removed=0
+        for f in "$BASH_PROFILE" "$BASHRC"; do
+            # shellcheck disable=SC2016  # literal snippet lines, must not expand
+            if [ -f "$f" ] && grep -qxF "$marker" "$f" 2>/dev/null; then
+                grep -vxF -e "$marker" \
+                          -e 'if [ -z "$STARSHIP_START_TIME" ] && command -v starship >/dev/null 2>&1; then' \
+                          -e '    eval "$(starship init bash)"' \
+                          -e 'fi' "$f" >"$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
+                info "Removed starship init from $f (starship not installed)"
+                removed=1
+            fi
+        done
+        [ "$removed" -eq 0 ] && info "Starship not installed; nothing to clean up"
         return 0
     fi
 
-    local marker='# Initialize Starship only if installed'
-    if [ -f "$BASH_PROFILE" ] && grep -qxF "$marker" "$BASH_PROFILE" 2>/dev/null; then
-        info "Starship init already present in ~/.bash_profile"
-        return 0
-    fi
-
-    {
-        printf '\n%s\n' "$marker"
-        printf '%s\n' 'if command -v starship >/dev/null 2>&1; then'
-        # shellcheck disable=SC2016  # literal snippet for ~/.bash_profile, must not expand
-        printf '%s\n' '    eval "$(starship init bash)"'
-        printf '%s\n' 'fi'
-    } >>"$BASH_PROFILE"
-    info "Added starship init to ~/.bash_profile"
+    for f in "$BASH_PROFILE" "$BASHRC"; do
+        if [ -f "$f" ] && grep -qxF "$marker" "$f" 2>/dev/null; then
+            info "Starship init already present in $f"
+            continue
+        fi
+        {
+            printf '\n%s\n' "$marker"
+            # shellcheck disable=SC2016  # literal snippet for the rc files, must not expand
+            printf '%s\n' 'if [ -z "$STARSHIP_START_TIME" ] && command -v starship >/dev/null 2>&1; then'
+            # shellcheck disable=SC2016  # literal snippet for the rc files, must not expand
+            printf '%s\n' '    eval "$(starship init bash)"'
+            printf '%s\n' 'fi'
+        } >>"$f"
+        info "Added starship init to $f"
+    done
     ok "starship -> $(command -v starship)"
 }
 
@@ -1479,9 +1514,10 @@ install_pkg_tools() {
         setup_golang_path
     fi
 
-    if is_selected starship; then
-        setup_starship_init
-    fi
+    # Starship snippet sync runs unconditionally (not gated on selection): it
+    # ensures the snippet in both rc files when installed, and removes it
+    # from both when the user uninstalled starship.
+    setup_starship_init
 }
 
 install_pip_tools() {
