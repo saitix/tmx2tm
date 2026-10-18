@@ -1,6 +1,6 @@
 # tmx2tm.sh
 
-Fresh-install installer for a new Termux instance.
+Termux 2 take many. A bundler for packages and 3rd party apps on a termux instalation / or a Fresh-install installer for a new Termux instance
 
 **Version: 0.6.** The version is defined once as `$SCRIPT_VERSION` in the
 config block, echoed by `-V`/`--version`, shown in the menu title and the
