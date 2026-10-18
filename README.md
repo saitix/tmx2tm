@@ -2,11 +2,6 @@
 
 Termux 2 take many. A bundler for packages and 3rd party apps on a termux instalation / or a Fresh-install installer for a new Termux instance
 
-**Version: 0.6.** The version is defined once as `$SCRIPT_VERSION` in the
-config block, echoed by `-V`/`--version`, shown in the menu title and the
-final summary, and mirrored in the script file header (`Version: 0.6`).
-Bump all of them together when changing the script.
-
 ![tmx2tm.sh interactive component selection menu](https://github.com/user-attachments/assets/2c158c42-37ec-4508-bce1-558ffc23a813)
 
 ## Overview
@@ -294,6 +289,10 @@ sshd                      # start the server
 ssh -p 8022 <user>@<device-ip>   # connect from another machine
 pkill sshd                # stop the server
 ```
+**Version: 0.6.** The version is defined once as `$SCRIPT_VERSION` in the
+config block, echoed by `-V`/`--version`, shown in the menu title and the
+final summary, and mirrored in the script file header (`Version: 0.6`).
+Bump all of them together if/when changing the script.
 
 ## Notes / limitations
 
