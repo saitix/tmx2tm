@@ -1309,7 +1309,7 @@ apply_menu_result() {
 
     local any=0
     for c in "${ALL_COMPONENTS[@]}"; do is_selected "$c" && any=1; done
-    if [ "$any" -eq 0 ]; then
+    if [ "$any" -eq 0 ] && [ "$CLEANUP" -eq 0 ]; then
         echo
         info "Nothing selected."
         exit 0
@@ -1996,6 +1996,15 @@ main() {
     fi
 
     announce "Starting installation - packages are downloaded and some are built from source; the display can pause for a while. Please wait..."
+    local any_tool=0 c
+    for c in "${ALL_COMPONENTS[@]}"; do is_selected "$c" && any_tool=1; done
+    if [ "$any_tool" -eq 0 ]; then
+        # Cleanup-only run (user ticked just the cleanup option): skip all
+        # install stages and go straight to the cleanup pass.
+        info "No tools selected — running cleanup only"
+        cleanup_stubs
+        exit 0
+    fi
     update_apt
     install_base_deps
     # Non-menu runs never opened the menu, so no probe has run yet: probe both
