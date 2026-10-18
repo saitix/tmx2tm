@@ -37,3 +37,18 @@ Minimal instructions for agents working in this repo.
    assumptions intact.
 7. **Commit style:** short imperative subject line (< 72 chars), blank line,
    then a body explaining what and why.
+8. **Unified status model.** Both component groups share one state machine —
+   `current` (green, `[installed]`), `outdated` (yellow, `[update+]`),
+   `missing` (dim, no suffix), `broken` (red, `[reason]`, 3rd-party only).
+   - Green and broken rows default to OFF in the menu (`menu_default_state`);
+     yellow and missing default to ON.
+   - Green + explicit menu tick = forced reinstall (`MENU_CONFIRMED`
+     distinguishes menu ticks from `-y` select-all, where green is skipped).
+   - Green + non-menu run = skip. Broken + selected = warn + skip, never die.
+   - Look up state with `comp_status <tag>`, suffix with `comp_suffix <tag>`,
+     color with `menu_item_color <tag>` — never read `PKG_STATUS`/`TP_STATUS`
+     directly outside the probe functions.
+   - 3rd-party probes live in `probe_tp_one` (pip via `pip index versions`,
+     git via `ls-remote` + archived API check); `probe_tp_status` runs them
+     in parallel. Every network call needs a `--max-time` cap.
+   - The `u`-action refresh is `refresh_menu_status` (both groups + toggles).

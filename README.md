@@ -188,15 +188,26 @@ menu. "Latest" is read from the apt package index (`apt list --upgradable`),
 so it reflects the last `apt update` — a stale index may show green for a
 tool that has a newer version upstream.
 
+3rd-party rows follow the same rules, plus **red** = the upstream source is
+unreachable, archived, or gone (suffixed with the reason, e.g.
+`[source unreachable]`, `[archived]`, `[not on PyPI]`). Red rows default to
+unchecked — installing from a dead source cannot work — and stay skipped
+with a warning even if ticked. Installed pip tools compare `pip show`
+against `pip index versions`; the shizuku clone compares local HEAD with the
+remote; core/kilocode/rish count as installed when their binaries exist. The
+probes run in parallel in the background (about a second for all tools) with
+a purple "please wait" notice while they run.
+
 At install time, green tools (already at the latest version) are not
 reinstalled: in the menu they default to **unchecked**, so confirming without
 touching them skips the pointless reinstall and the toggles stay consistent
-with the colors. If you tick a green tool anyway, it is force-reinstalled via
-`pkg reinstall` at install time. In non-menu runs (`-y` / no TTY) everything
-is selected by default, so green tools are skipped there instead of
-reinstalled. The skip list is printed, and if nothing needs installing the
+with the colors. If you tick a green tool anyway, it is force-reinstalled at
+install time (`pkg reinstall` for pkg tools, `pip --force-reinstall` /
+installer rerun for 3rd-party tools). In non-menu runs (`-y` / no TTY)
+everything is selected by default, so green tools are skipped there instead
+of reinstalled. The skip list is printed, and if nothing needs installing the
 install step is omitted entirely. For non-menu runs the status is probed at
-the pkg stage, after `apt update`, so "latest" is judged on a fresh index.
+the stages, after `apt update`, so "latest" is judged on a fresh index.
 
 ## Update (menu key 'u')
 

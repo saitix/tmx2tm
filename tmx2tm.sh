@@ -252,10 +252,9 @@ is_selected() { [ "${SELECTED[$1]:-0}" = "1" ]; }
 
 # ------------------------------------------------ pkg status for menu -------
 # Probe installed/upgradable state for the pkg-tool components so the menu can
-# color them: green = installed and latest, yellow = installed but upgradable,
-# default = not installed. Results are cached in PKG_STATUS (tag -> state) and
-# computed once before the menu opens; refresh_pkg_status recomputes after the
-# 'u' update action so colors stay accurate if the menu is redrawn.
+# color them (see the unified rules under "menu (TUI)"). Results are cached in
+# PKG_STATUS (tag -> state); refresh_menu_status recomputes after the 'u'
+# update action so colors stay accurate if the menu is redrawn.
 #
 # "Upgradable" is read from the apt package index via `apt list --upgradable`.
 # That reflects the last `apt update`: a stale index may report "latest" for a
@@ -287,13 +286,239 @@ probe_pkg_status() {
     done
 }
 
-# Status suffix appended to the pkg-tool description in the menu
-# ("[installed]" / "[update+]"); empty for missing tools.
-pkg_status_suffix() {
-    case "${PKG_STATUS[$1]:-missing}" in
+# Status suffix appended to a component's menu description.
+# Unified rule for pkg and 3rd-party rows: [installed] / [update+] / [reason];
+# empty for missing tools. Broken (red) rows carry the reason: e.g.
+# [source unreachable], [archived], [not on PyPI].
+comp_suffix() {
+    local st why
+    st="$(comp_status "$1")"
+    case "$st" in
         current)  printf ' [installed]' ;;
         outdated) printf ' [update+]' ;;
+        broken)
+            why="${TP_BROKEN_WHY[$1]:-source gone}"
+            printf ' [%s]' "$why" ;;
         *)        printf '' ;;
+    esac
+}
+
+# Unified status lookup for any component tag: current|outdated|missing|broken.
+# pkg tags read PKG_STATUS, 3rd-party tags read TP_STATUS; unknown tags and
+# empty maps fall back to missing.
+comp_status() {
+    case " ${PKG_TOOL_COMPONENTS[*]} " in
+        *" $1 "*) printf '%s' "${PKG_STATUS[$1]:-missing}" ;;
+        *)        printf '%s' "${TP_STATUS[$1]:-missing}" ;;
+    esac
+}
+
+# Row color for any component tag by probe state: green = installed+latest,
+# yellow = installed+upgradable, red = broken source, default = not installed.
+menu_item_color() {
+    case "$(comp_status "$1")" in
+        current)  printf '%s' "$C_OK" ;;
+        outdated) printf '%s' "$C_YELLOW" ;;
+        broken)   printf '%s' "$C_ERR" ;;
+        *)        printf '' ;;
+    esac
+}
+
+# Default menu toggle for any component tag. Green (nothing to do) and broken
+# (nothing can be done — the source is dead) default to off; the user can
+# still tick a green row to force a reinstall. Missing and yellow default on.
+menu_default_state() {
+    case "$(comp_status "$1")" in
+        current|broken) printf 'off' ;;
+        *)              printf 'on' ;;
+    esac
+}
+
+# ------------------------------------- third-party status for menu -------
+# Same state model as the pkg tools, plus "broken" (red): the component's
+# upstream source is unreachable, archived, or gone. Probes run in parallel
+# background jobs (one per tool) so the menu does not wait on slow networks;
+# every network call carries a short --max-time and failures fall back to a
+# safe verdict instead of hanging. Results land in TP_STATUS (tag -> state)
+# with reasons in TP_BROKEN_WHY (tag -> e.g. "source unreachable").
+declare -A TP_STATUS=()
+declare -A TP_BROKEN_WHY=()
+
+# Upstream git repo (owner/repo) for the tools fetched from git. Tools without
+# an entry (pip packages, kilocode via core) skip the git reachability check.
+declare -A TP_GIT_REPO=(
+    [shizuku]="jecis-repos/termux-shizuku-tools"
+    [core]="DevCoreXOfficial/core-termux"
+    [rish]="merbah3266/rish_installer"
+)
+
+# pip package name per pip-based tool tag.
+declare -A TP_PIP_NAME=(
+    [copyparty]="copyparty"
+    [ytdlp]="yt-dlp"
+    [pydf]="pydf"
+)
+
+# Local presence check per 3rd-party tag. Mirrors what the install stages and
+# the 'u' update action treat as "installed".
+tp_installed() {
+    case "$1" in
+        copyparty) command -v copyparty >/dev/null 2>&1 || [ -x "$HOME/.local/bin/copyparty" ] ;;
+        ytdlp)     command -v yt-dlp >/dev/null 2>&1 || [ -x "$HOME/.local/bin/yt-dlp" ] ;;
+        pydf)      command -v pydf >/dev/null 2>&1 ;;
+        shizuku)   [ -d "$SHIZUKU_DIR/.git" ] ;;
+        rish)      [ -e "$PREFIX/bin/rish" ] || [ -e "$HOME/rish" ] ;;
+        core)      command -v core >/dev/null 2>&1 ;;
+        kilocode)  command -v kilocode >/dev/null 2>&1 ;;
+    esac
+}
+
+# Upstream git state for owner/repo: ok | unreachable | archived.
+# Unreachable = `git ls-remote` failed (repo gone, network down, host down).
+# Archived is read from the GitHub API; an API failure (rate limit, offline)
+# skips the archived check instead of crying wolf — reachability already
+# covered the offline case.
+tp_git_repo_state() {
+    git ls-remote "https://github.com/$1.git" HEAD >/dev/null 2>&1 \
+        || { echo unreachable; return; }
+    local archived
+    archived=$(curl -fsSL --max-time 8 "https://api.github.com/repos/$1" 2>/dev/null \
+        | grep -o '"archived": *[a-z]*' | awk '{print $2}')
+    if [ "$archived" = "true" ]; then echo archived; else echo ok; fi
+}
+
+# Probe one pip-based tool. Installed version comes from `pip show`, latest
+# from `pip index versions`. If the index cannot be read but PyPI itself is
+# alive, the install is fine and the version is just unknown -> current. If
+# PyPI has no such package at all -> broken (e.g. removed or renamed).
+tp_probe_pip() {
+    local tag="$1" pkg="${TP_PIP_NAME[$1]}"
+    tp_installed "$tag" || { printf 'missing\n\n'; return; }
+    local inst latest
+    inst=$(pip show "$pkg" 2>/dev/null | awk '/^Version: /{print $2; exit}')
+    latest=$(pip index versions "$pkg" 2>/dev/null \
+        | sed -n 's/^Available versions: //p' | cut -d, -f1 | tr -d ' ')
+    if [ -n "$latest" ]; then
+        if [ -n "$inst" ] && [ "$inst" = "$latest" ]; then
+            printf 'current\n\n'
+        else
+            printf 'outdated\n\n'
+        fi
+        return
+    fi
+    if curl -fsSL --max-time 8 "https://pypi.org/simple/$pkg/" >/dev/null 2>&1; then
+        printf 'current\n\n'
+    else
+        printf 'broken\nnot on PyPI\n'
+    fi
+}
+
+# Probe one git-based tool (shizuku, core, rish installer repo).
+# Not installed: the source must be alive for an install to work — dead source
+# means broken. Installed: compare local HEAD with the remote (shizuku has a
+# real clone); archived upstream always means broken per the red rule.
+tp_probe_git() {
+    local tag="$1" repo="${TP_GIT_REPO[$1]}"
+    local state remote_head local_head
+    if ! tp_installed "$tag"; then
+        state="$(tp_git_repo_state "$repo")"
+        case "$state" in
+            ok)         printf 'missing\n\n' ;;
+            archived)   printf 'broken\narchived\n' ;;
+            *)          printf 'broken\nsource unreachable\n' ;;
+        esac
+        return
+    fi
+    if [ "$tag" = "shizuku" ]; then
+        remote_head=$(git ls-remote "https://github.com/$repo.git" HEAD 2>/dev/null | awk '{print $1}')
+        if [ -z "$remote_head" ]; then
+            printf 'broken\nsource unreachable\n'
+            return
+        fi
+        local_head=$(git -C "$SHIZUKU_DIR" rev-parse HEAD 2>/dev/null)
+        state="$(tp_git_repo_state "$repo")"
+        if [ "$state" = "archived" ]; then
+            printf 'broken\narchived\n'
+        elif [ -n "$local_head" ] && [ "$local_head" = "$remote_head" ]; then
+            printf 'current\n\n'
+        else
+            printf 'outdated\n\n'
+        fi
+        return
+    fi
+    # core / rish: no local clone to diff; installed means working. An archived
+    # upstream still counts as broken per the red rule.
+    state="$(tp_git_repo_state "$repo")"
+    case "$state" in
+        archived)   printf 'broken\narchived\n' ;;
+        unreachable) printf 'broken\nsource unreachable\n' ;;
+        *)          printf 'current\n\n' ;;
+    esac
+}
+
+# Probe one 3rd-party tool; prints state on line 1, broken reason on line 2.
+probe_tp_one() {
+    case "$1" in
+        copyparty|ytdlp|pydf) tp_probe_pip "$1" ;;
+        shizuku|core|rish)    tp_probe_git "$1" ;;
+        kilocode)
+            # Installed via core, no own upstream to check: present = current.
+            tp_installed kilocode && printf 'current\n\n' || printf 'missing\n\n' ;;
+        *) printf 'missing\n\n' ;;
+    esac
+}
+
+# Probe all 3rd-party tools in parallel background jobs. Each job writes its
+# two-line result to a temp file; this function waits for all of them, then
+# fills TP_STATUS / TP_BROKEN_WHY. Slow networks are bounded by the per-call
+# --max-time flags inside the probes.
+probe_tp_status() {
+    TP_STATUS=()
+    TP_BROKEN_WHY=()
+    local tmpdir c
+    tmpdir=$(mktemp -d 2>/dev/null) || { warn "Cannot create temp dir for probe"; return 1; }
+    for c in "${THIRD_PARTY_COMPONENTS[@]}"; do
+        ( probe_tp_one "$c" >"$tmpdir/$c" 2>/dev/null ) &
+    done
+    wait
+    local state why
+    for c in "${THIRD_PARTY_COMPONENTS[@]}"; do
+        if [ -f "$tmpdir/$c" ]; then
+            { read -r state; read -r why || why=""; } <"$tmpdir/$c"
+            TP_STATUS[$c]="${state:-missing}"
+            [ -n "$why" ] && TP_BROKEN_WHY[$c]="$why"
+        else
+            TP_STATUS[$c]="missing"
+        fi
+    done
+    rm -rf "$tmpdir"
+}
+
+# Probe once, reuse afterwards. Menu runs probe before opening; non-menu runs
+# probe at the stages. Never re-probe blindly: the 'u' refresh calls the
+# explicit probe functions.
+ensure_tp_status() {
+    [ "${#TP_STATUS[@]}" -gt 0 ] || probe_tp_status
+}
+
+# Gate for a 3rd-party install stage. Sets TP_FORCE (0/1). Returns 0 = proceed
+# (fresh install, update, or forced reinstall of a green tool after an explicit
+# menu tick), 1 = skip (green tool in a non-menu run, or broken source).
+# Broken + selected never dies mid-run: warn and skip instead.
+TP_FORCE=0
+tp_gate() {
+    local tag="$1"
+    TP_FORCE=0
+    ensure_tp_status
+    case "${TP_STATUS[$tag]:-missing}" in
+        current)
+            if [ "$MENU_CONFIRMED" -eq 1 ]; then TP_FORCE=1; return 0; fi
+            info "'$tag' already installed (latest), skipping"
+            return 1 ;;
+        broken)
+            warn "'$tag' skipped (${TP_BROKEN_WHY[$tag]:-source gone})"
+            return 1 ;;
+        *) return 0 ;;
     esac
 }
 
@@ -326,7 +551,7 @@ ensure_bashrc_line() {
 # finishes, so the caller can refresh per-item state (like TUI_ITEM_COLOR)
 # before the menu redraws.
 # TUI_LEGEND, when non-empty, adds one status-legend line under the help lines
-# (green = installed, yellow = update available).
+# (green = installed, yellow = update+, red = source gone).
 TUI_EXTRA_KEYS=()
 TUI_EXTRA_DESCS=()
 TUI_EXTRA_BUSY=()
@@ -435,7 +660,7 @@ tui_checklist() {
         _tui_line "$C_KEY" 'Up' "$C_DIM" '/' "$C_KEY" 'Down' "$C_DIM" ' move  ' "$C_KEY" 'Space' "$C_DIM" ' toggle'
         _tui_line "$C_KEY" 'a' "$C_DIM" ' all  ' "$C_KEY" 'Enter' "$C_DIM" ' confirm  ' "$C_KEY" 'q' "$C_DIM" ' quit'
         if [ -n "${TUI_LEGEND:-}" ]; then
-            _tui_line "$C_OK" 'green' "$C_DIM" ' = installed  ' "$C_YELLOW" 'yellow' "$C_DIM" ' = update available'
+            _tui_line "$C_OK" 'green' "$C_DIM" ' = installed  ' "$C_YELLOW" 'yellow' "$C_DIM" ' = update+  ' "$C_ERR" 'red' "$C_DIM" ' = source gone'
         fi
         local ei
         for ((ei = 0; ei < extra; ei++)); do
@@ -649,46 +874,38 @@ menu_update_tools() {
 }
 
 # ------------------------------------------------------------- menu (TUI) ----
-# Colors for pkg-tool rows by probe state. Missing tools keep the default dim
-# color; installed+latest rows are green, installed+upgradable rows are yellow.
-menu_pkg_color() {
-    case "${PKG_STATUS[$1]:-missing}" in
-        current)  printf '%s' "$C_OK" ;;
-        outdated) printf '%s' "$C_YELLOW" ;;
-        *)        printf '' ;;
-    esac
-}
-
 # Rebuild TUI_ITEM_COLOR after a status change (e.g. after the 'u' update
 # action): one entry per menu row, in the same order the rows were built.
+# Unified rule for both groups: green = installed+latest, yellow =
+# installed+upgradable, red = broken source, default = not installed.
 refresh_menu_colors() {
     local i=0
     TUI_ITEM_COLOR=()
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # sep: 3rd-party tools
-    for _c in "${THIRD_PARTY_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]=""; ((i++)) || true; done
+    for _c in "${THIRD_PARTY_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"; ((i++)) || true; done
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # sep: pkg tools
-    for _c in "${PKG_TOOL_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]="$(menu_pkg_color "$_c")"; ((i++)) || true; done
+    for _c in "${PKG_TOOL_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"; ((i++)) || true; done
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # apt_upgrade option
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # no_storage option
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # kilocode_native option
 }
 
-# Re-probe pkg status and rebuild the row colors. Wired as TUI_REFRESH_FN so
-# colors update right after the 'u' action without leaving the menu.
-# Newly-current (green) tools are also unchecked: they need no install, and
-# this keeps the toggles consistent with the colors after an update.
-refresh_pkg_status() {
+# Re-probe all statuses and rebuild row colors, suffixes, and toggles. Wired
+# as TUI_REFRESH_FN so the menu refreshes right after the 'u' action without
+# leaving it. Green tools go off (nothing to do), broken tools go off
+# (nothing can be done); missing/yellow rows keep the user's toggle.
+refresh_menu_status() {
     probe_pkg_status
+    probe_tp_status
     refresh_menu_colors
-    # Refresh the pkg-row descriptions' status suffixes and toggle states in
-    # place. Green tools go off; missing/yellow tools keep the user's toggle.
-    local i
+    local i st
     for ((i = 0; i < n; i++)); do
         [ "${kinds[$i]}" = item ] || continue
-        case " ${PKG_TOOL_COMPONENTS[*]} " in
+        case " ${ALL_COMPONENTS[*]} " in
             *" ${tags[i]} "*)
-                descs[i]="${COMP_DESC[${tags[i]}]}$(pkg_status_suffix "${tags[i]}")"
-                if [ "${PKG_STATUS[${tags[i]}]:-missing}" = "current" ]; then
+                descs[i]="${COMP_DESC[${tags[i]}]}$(comp_suffix "${tags[i]}")"
+                st="$(comp_status "${tags[i]}")"
+                if [ "$st" = "current" ] || [ "$st" = "broken" ]; then
                     states[i]="off"
                 fi
                 ;;
@@ -702,21 +919,19 @@ show_menu() {
     local -a items=()
     local c
     items+=("sep|3rd-party tools")
+    announce "Checking 3rd-party tools (network check, please wait)..."
+    probe_tp_status
     for c in "${THIRD_PARTY_COMPONENTS[@]}"; do
-        items+=("$c|${COMP_DESC[$c]}|on")
+        # Green (installed+latest) and broken (dead source) default to off:
+        # re-installing green is pointless, installing broken is impossible.
+        # A ticked green row forces a reinstall at install time.
+        items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
     done
     items+=("sep|pkg tools")
     info "Checking installed pkg tools..."
     probe_pkg_status
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
-        # Green (installed+latest) tools default to off: re-installing them is
-        # pointless, and this keeps the toggles consistent with the colors.
-        # The user can still tick one to force a reinstall at install time.
-        if [ "${PKG_STATUS[$c]:-missing}" = "current" ]; then
-            items+=("$c|${COMP_DESC[$c]}$(pkg_status_suffix "$c")|off")
-        else
-            items+=("$c|${COMP_DESC[$c]}$(pkg_status_suffix "$c")|on")
-        fi
+        items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
     done
     items+=("apt_upgrade|OPTION: apt update & upgrade before installing (recommended)|$([ "$APT_UPGRADE" -eq 1 ] && echo on || echo off)")
     items+=("no_storage|OPTION: skip termux-setup-storage (shared storage)|$([ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off)")
@@ -731,8 +946,8 @@ show_menu() {
     # Status colors for pkg rows (green = installed+latest, yellow =
     # installed+upgradable, default = missing); refreshed after 'u'.
     refresh_menu_colors
-    TUI_REFRESH_FN="refresh_pkg_status"
-    TUI_LEGEND="pkg-status"
+    TUI_REFRESH_FN="refresh_menu_status"
+    TUI_LEGEND="status"
 
     # Vertical fit: the redraw moves the cursor up one line per rendered line,
     # so if the block is taller than the screen the display corrupts. Fall
@@ -978,18 +1193,31 @@ install_pip_tools() {
     python -m ensurepip --upgrade >/dev/null 2>&1 || warn "ensurepip reported issues; continuing"
 
     if is_selected copyparty; then
-        python -m pip install --user -U copyparty || die "pip install copyparty failed"
-        ok "copyparty -> $(command -v copyparty || echo "$HOME/.local/bin/copyparty")"
+        if tp_gate copyparty; then
+            # TP_FORCE=1 after an explicit menu tick on a green tool.
+            local force_flag=()
+            [ "$TP_FORCE" -eq 1 ] && force_flag=(--force-reinstall)
+            python -m pip install --user "${force_flag[@]}" -U copyparty || die "pip install copyparty failed"
+            ok "copyparty -> $(command -v copyparty || echo "$HOME/.local/bin/copyparty")"
+        fi
     fi
 
     if is_selected ytdlp; then
-        python -m pip install --user -U yt-dlp || die "pip install yt-dlp failed"
-        ok "yt-dlp -> $(command -v yt-dlp || echo "$HOME/.local/bin/yt-dlp")"
+        if tp_gate ytdlp; then
+            local force_flag=()
+            [ "$TP_FORCE" -eq 1 ] && force_flag=(--force-reinstall)
+            python -m pip install --user "${force_flag[@]}" -U yt-dlp || die "pip install yt-dlp failed"
+            ok "yt-dlp -> $(command -v yt-dlp || echo "$HOME/.local/bin/yt-dlp")"
+        fi
     fi
 
     if is_selected pydf; then
-        pip3 install -U pydf || die "pip3 install pydf failed"
-        ok "pydf -> $(command -v pydf || echo missing)"
+        if tp_gate pydf; then
+            local force_flag=()
+            [ "$TP_FORCE" -eq 1 ] && force_flag=(--force-reinstall)
+            pip3 install "${force_flag[@]}" -U pydf || die "pip3 install pydf failed"
+            ok "pydf -> $(command -v pydf || echo missing)"
+        fi
     fi
 
     if is_selected copyparty || is_selected ytdlp; then
@@ -1010,6 +1238,9 @@ install_copyparty_storage() {
 
 install_shizuku_tools() {
     is_selected shizuku || return 0
+    tp_gate shizuku || return 0
+    # TP_FORCE=1 after an explicit menu tick on a green tool: pull + setup.sh
+    # rerun is the reinstall path (both are idempotent).
 
     step "Installing termux-shizuku-tools"
 
@@ -1048,6 +1279,7 @@ install_shizuku_tools() {
 
 install_rish() {
     is_selected rish || return 0
+    tp_gate rish || return 0
 
     step "Installing rish (merbah3266/rish_installer)"
 
@@ -1058,8 +1290,9 @@ install_rish() {
     # components are selected; it extracts the real rish from the Shizuku APK
     # and patches it for this terminal's Android package.
     local -a flags=()
-    if [ -e "$PREFIX/bin/rish" ] || [ -e "$HOME/rish" ]; then
-        info "An existing rish was found; passing --reinstall"
+    # TP_FORCE=1 after an explicit menu tick on a green tool.
+    if [ "$TP_FORCE" -eq 1 ] || [ -e "$PREFIX/bin/rish" ] || [ -e "$HOME/rish" ]; then
+        info "Passing --reinstall to the rish installer"
         flags+=(--reinstall)
     fi
 
@@ -1097,10 +1330,13 @@ install_rish() {
 
 install_core() {
     is_selected core || return 0
+    tp_gate core || return 0
 
     step "Installing core (core-termux)"
 
-    if [ -x "$PREFIX/bin/core" ]; then
+    # TP_FORCE=1 after an explicit menu tick on a green tool: rerun the
+    # upstream installer instead of taking the already-installed shortcut.
+    if [ "$TP_FORCE" -eq 0 ] && [ -x "$PREFIX/bin/core" ]; then
         ok "core already installed: $PREFIX/bin/core"
         return
     fi
@@ -1120,10 +1356,13 @@ install_core() {
 
 install_kilocode() {
     is_selected kilocode || return 0
+    tp_gate kilocode || return 0
 
     step "Installing kilocode-cli via core (core install ai --kilocode-cli)"
 
-    if command -v kilocode >/dev/null 2>&1; then
+    # TP_FORCE=1 after an explicit menu tick on a green tool: rerun the core
+    # installer instead of taking the already-installed shortcut.
+    if [ "$TP_FORCE" -eq 0 ] && command -v kilocode >/dev/null 2>&1; then
         ok "kilocode already installed -> $(command -v kilocode)"
         return
     fi
@@ -1262,6 +1501,14 @@ main() {
     announce "Starting installation - packages are downloaded and some are built from source; the display can pause for a while. Please wait..."
     update_apt
     install_base_deps
+    # Non-menu runs never opened the menu, so no probe has run yet: probe both
+    # groups now (after apt update, so "latest" is judged on a fresh index).
+    # Menu runs reuse the pre-menu probe, refreshed by the 'u' action.
+    if [ "$MENU_CONFIRMED" -eq 0 ]; then
+        announce "Probing installed tools, please wait..."
+        probe_pkg_status
+        probe_tp_status
+    fi
     install_pkg_tools
     install_pip_tools
     install_copyparty_storage
