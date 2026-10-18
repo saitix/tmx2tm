@@ -7,6 +7,8 @@ config block, echoed by `-V`/`--version`, shown in the menu title and the
 final summary, and mirrored in the script file header (`Version: 0.6`).
 Bump all of them together when changing the script.
 
+![tmx2tm.sh interactive component selection menu](https://github.com/user-attachments/assets/2c158c42-37ec-4508-bce1-558ffc23a813)
+
 ## Overview
 
 Single-file, dependency-light installer that bootstraps a fresh Termux with a
@@ -20,19 +22,30 @@ elsewhere, reproduce the stages below (sources are listed with each tool).
 
 ## Quick start
 
-Run it straight from git (no clone needed). The script is downloaded to a
-temp file first and then run with your own shell, so flags work and the
-interactive menu keeps a usable stdin (do NOT pipe `curl` into `bash` —
-the menu reads stdin and would break):
+Run directly from GitHub in Termux's Bash (no clone needed):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o /tmp/tmx2tm.sh && bash /tmp/tmx2tm.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh)
 ```
 
-Unattended (install everything, no menu):
+Bash's process substitution supplies the script separately from stdin, so
+the interactive menu still works. Append flags after `)` (for example, `-y`
+to install everything without the menu). Do NOT use `curl ... | bash`:
+the menu needs stdin for keyboard input.
+
+The shorter form streams the download into Bash: execution can start before
+the download finishes, and a `curl` failure does not reliably make Bash fail.
+For a download-first alternative that runs only after `curl` succeeds, use
+Termux's writable `$TMPDIR` rather than `/tmp`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o /tmp/tmx2tm.sh && bash /tmp/tmx2tm.sh -y
+curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o "$TMPDIR/tmx2tm.sh" && bash "$TMPDIR/tmx2tm.sh"
+```
+
+Unattended, using the download-first form (install everything, no menu):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o "$TMPDIR/tmx2tm.sh" && bash "$TMPDIR/tmx2tm.sh" -y
 ```
 
 Or clone and run locally:
