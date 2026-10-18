@@ -68,3 +68,5 @@ Minimal instructions for agents working in this repo.
      rebuild and re-probe. NEVER re-exec "$0" to reload: under
      `bash <(curl ...)` $0 is an exhausted /dev/fd pipe, so exec runs an
      empty script and exits silently. In-process loops only.
+   - Text-menu `r` (zoom out and reload) signals rc 43 for the same loop;
+     a reload is a fresh re-probed look, not a resume of picked toggles.

@@ -1071,14 +1071,15 @@ show_menu() {
     if [ "$est" -ge "$rows" ]; then
         warn "Menu needs $est rows, terminal has $rows"
         info "Falling back to a plain text menu"
+        info "Tip: zoom out / rotate to landscape for more rows, then press 'r' to reload the full menu"
         TUI_EXTRA_KEYS=(); TUI_EXTRA_DESCS=(); TUI_EXTRA_BUSY=(); TUI_EXTRA_FNS=()
         TUI_EXTRA_STYLE=()
         TUI_ITEM_COLOR=(); TUI_REFRESH_FN=""; TUI_LEGEND=""
         show_text_menu "${items[@]}"
         text_rc=$?
-        # 42 = 'p' installed the prerequisites: loop back, rebuild items with
-        # fresh probes, and retry the TUI (or the text menu without 'p').
-        if [ "$text_rc" -eq 42 ]; then
+        # 42 = 'p' installed the prerequisites, 43 = 'r' reload after zoom:
+        # loop back, rebuild items with fresh probes, and retry the TUI.
+        if [ "$text_rc" -eq 42 ] || [ "$text_rc" -eq 43 ]; then
             continue
         fi
         return "$text_rc"
@@ -1144,11 +1145,13 @@ show_text_menu() {
     done
     echo
     # The prerequisites command stands out in bold white, but only when it is
-    # actually offered (base prerequisites missing, e.g. fresh Termux).
+    # actually offered (base prerequisites missing, e.g. fresh Termux). The
+    # 'r' reload is always offered: zoom out / rotate, then reload the menu
+    # (the TUI is retried when the terminal is tall enough again).
     if prereqs_missing; then
-        printf '%s\n' "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | ${C_KEY}p = install prerequisites${C_RESET} | <Enter> = confirm | q = quit"
+        printf '%s\n' "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | ${C_KEY}p = install prerequisites${C_RESET} | r = zoom out and reload | <Enter> = confirm | q = quit"
     else
-        echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | <Enter> = confirm | q = quit"
+        echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | r = zoom out and reload | <Enter> = confirm | q = quit"
     fi
 
     local line t idx
@@ -1185,6 +1188,14 @@ show_text_menu() {
                 # would run an empty script and exit silently.
                 progress "Prerequisites installed — reloading the menu..."
                 return 42
+                ;;
+            r|R)
+                # Zoomed out / rotated since the fallback opened: signal the
+                # show_menu loop (rc 43) to rebuild with fresh probes and
+                # retry the TUI. A reload is a fresh look (re-probed defaults),
+                # not a resume of the toggles picked here.
+                progress "Reloading the menu..."
+                return 43
                 ;;
             *)
                 for t in $line; do

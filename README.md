@@ -359,8 +359,11 @@ Bump all of them together if/when changing the script.
   very narrow screens (e.g. a folded phone). If the terminal is too short
   to fit the whole checklist, a plain numbered text menu is shown instead
   (same items and defaults; type numbers to toggle, `a` for all, `s`/`u`/`p`
-  for backup/update/prerequisites, Enter to confirm, `q` to quit). The menu
-  always comes first — nothing is installed before you confirm a selection.
+  for backup/update/prerequisites, `r` for zoom-out-and-reload, Enter to
+  confirm, `q` to quit). The menu always comes first — nothing is installed
+  before you confirm a selection. If the fallback appears only because the
+  terminal is short, zoom out or rotate to landscape and press `r`: the menu
+  rebuilds with fresh probes and the full TUI opens when it fits again.
 - On a fresh Termux without `git`/`pip` yet, the status probes degrade to
   presence-only verdicts (installed = green, missing = dim, never red);
   full version/source checks activate once the base dependencies are in.
