@@ -296,20 +296,27 @@ The menu toggle "apt update & upgrade before installing" is on by default.
 The kilocode-cli stores its state under:
 
 ```text
-~/.config/kilo/kilo.jsonc          settings / permissions
-~/.local/share/kilo/auth.json      login tokens (kilo.access/refresh/expires)
-~/.local/state/kilo/model.json     selected model
+~/.config/kilo/kilo.jsonc               settings / permissions
+~/.local/share/kilo/auth.json           login tokens (kilo.access/refresh/expires)
+~/.local/state/kilo/model.json          selected model
+~/.local/share/kilo/storage/            chat sessions (session_diff/share payloads)
+~/.local/state/kilo/session.json        active-session pointer
+~/.local/state/kilo/prompt-history.jsonl  prompt history
 ```
 
-(`kilo-rc.db` = session history, `models.json` = cache; both are ignored.)
+(`kilo-rc.db` = 28 MB live message-history database, `models.json` = cache;
+both are ignored — the db is rebuilt on the new device, and copying a live
+SQLite db across devices risks lock/version issues.)
 
-"Save backup" (menu key 's', or `--save-kilo`) tars those three files into a
+"Save backup" (menu key 's', or `--save-kilo`) tars those files into a
 chmod-600 archive so the installer itself never contains live credentials.
 The 's' menu key always writes to the default path (`~/.kilo-backup.tar.gz`);
 a custom path applies only to `--save-kilo`/`--restore-kilo`. "Restore"
-(`--restore-kilo`) first validates that the archive contains only those three
-members, then extracts them into `$HOME` and re-applies 600 perms; a wrong or
-hostile archive is refused. If both `--save-kilo` and `--restore-kilo` are
+(`--restore-kilo`) first validates that the archive contains only those
+members (the `storage/` directory matches by prefix), then extracts them
+into `$HOME` and re-applies 600 perms; a wrong or hostile archive is
+refused. Older 3-file archives (settings + tokens + model only) still
+restore fine. If both `--save-kilo` and `--restore-kilo` are
 given, the backup runs and the restore is skipped.
 
 > [!CAUTION]

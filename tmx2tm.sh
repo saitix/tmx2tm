@@ -1770,13 +1770,21 @@ print_summary() {
 }
 
 # ------------------------------------------------- kilo settings backup ----
-# Snapshot of the current Kilo / kilocode settings and login tokens.
-# Kept OUT of the script so the installer never embeds live credentials.
+# Snapshot of the current Kilo / kilocode settings, login tokens, and chat
+# sessions. Kept OUT of the script so the installer never embeds live
+# credentials. kilo-rc.db (message history, ~28MB live SQLite db) is
+# deliberately excluded: it is rebuilt on the new device, and copying a live
+# database across devices risks lock/version issues.
 kilo_backup_files() {
     local -a files=()
     [ -f "$KILO_CONFIG_DIR/kilo.jsonc" ] && files+=(".config/kilo/kilo.jsonc")
     [ -f "$KILO_DATA_DIR/auth.json" ]    && files+=(".local/share/kilo/auth.json")
     [ -f "$KILO_STATE_DIR/model.json" ]  && files+=(".local/state/kilo/model.json")
+    # Chat sessions: per-session diff/share payloads plus the active-session
+    # pointer and prompt history (~75KB total).
+    [ -d "$KILO_DATA_DIR/storage" ]              && files+=(".local/share/kilo/storage")
+    [ -f "$KILO_STATE_DIR/session.json" ]        && files+=(".local/state/kilo/session.json")
+    [ -f "$KILO_STATE_DIR/prompt-history.jsonl" ] && files+=(".local/state/kilo/prompt-history.jsonl")
     [ "${#files[@]}" -gt 0 ] || return 0
     printf '%s\n' "${files[@]}"
 }
@@ -1810,11 +1818,12 @@ restore_kilo() {
 
     # Defense against a wrong or hostile archive: only the exact members we
     # produce are allowed, so nothing can be written outside the kilo dirs.
+    # The storage/ directory matches by prefix (it contains per-session files).
     tar -tzf "$in" >/dev/null 2>&1 || die "Not a valid tar.gz backup: $in"
     local member bad_members=""
     while IFS= read -r member; do
         case "$member" in
-            .config/kilo/kilo.jsonc|.local/share/kilo/auth.json|.local/state/kilo/model.json) ;;
+            .config/kilo/kilo.jsonc|.local/share/kilo/auth.json|.local/state/kilo/model.json|.local/state/kilo/session.json|.local/state/kilo/prompt-history.jsonl|.local/share/kilo/storage|.local/share/kilo/storage/*) ;;
             *) bad_members+="$member " ;;
         esac
     done < <(tar -tzf "$in")
