@@ -775,15 +775,19 @@ tui_checklist() {
 
     _tui_clear() { printf '\033[%dA\033[J' "$lines"; }
 
-    # Move the cursor by $1 rows, skipping separator headers.
+    # Move the cursor by $1 rows, skipping separator headers. Wraps around
+    # at the top/bottom so the cursor circles over the list.
     _tui_move() {
         local d="$1"
-        local j=$((cur + d))
-        while [ "$j" -ge 0 ] && [ "$j" -lt "$n" ] && [ "${kinds[$j]}" = sep ]; do j=$((j + d)); done
-        if [ "$j" -ge 0 ] && [ "$j" -lt "$n" ]; then
+        local j=$cur tries=0
+        while [ "$tries" -lt "$n" ]; do
+            j=$(( (j + d + n) % n ))
+            tries=$((tries + 1))
+            [ "${kinds[$j]}" = sep ] && continue
             cur=$j
             changed=1
-        fi
+            return
+        done
     }
 
     tput civis 2>/dev/null || true
