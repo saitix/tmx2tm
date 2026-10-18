@@ -12,7 +12,7 @@
 # (Do NOT pipe curl into bash: the script reads stdin for its interactive
 # menu, so `curl ... | bash` would break the TUI.)
 #
-# Version: 0.7
+# Version: 0.8
 #
 # Installs (selectable via a built-in arrow-key TUI, or non-interactive with -y).
 # Components are grouped and sorted alphabetically, mirroring the menu order:
@@ -79,6 +79,7 @@ C_HL=$'\e[38;5;213m'
 C_KEY=$'\e[1;37m'   # bold white, used for shortcut keys
 C_ERR=$'\e[1;31m'
 C_PURPLE=$'\e[38;5;135m'   # "working / please wait" notices
+C_YELLOW=$'\e[38;5;220m'   # pkg tool installed but upgradable (menu status)
 
 step() { printf '\n%s==>%s %s%s%s\n' "$C_BLUE" "$C_RESET" "$C_HL" "$1" "$C_RESET"; }
 announce() { printf '\n%s%s%s\n' "$C_PURPLE" "$1" "$C_RESET"; }
@@ -88,7 +89,7 @@ warn() { printf '    %s[!]%s %s\n' "$C_WARN" "$C_RESET" "$1"; }
 die()  { printf '\n%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
 
 # ---------------------------------------------------------------- config ----
-SCRIPT_VERSION="0.7"
+SCRIPT_VERSION="0.8"
 REPO_SHIZUKU="https://github.com/jecis-repos/termux-shizuku-tools.git"
 REPO_CORE_INSTALL="https://raw.githubusercontent.com/DevCoreXOfficial/core-termux/main/install.sh"
 REPO_RISH_INSTALL="https://raw.githubusercontent.com/merbah3266/rish_installer/main/rish_installer.sh"
@@ -243,6 +244,53 @@ require_termux() {
 
 is_selected() { [ "${SELECTED[$1]:-0}" = "1" ]; }
 
+# ------------------------------------------------ pkg status for menu -------
+# Probe installed/upgradable state for the pkg-tool components so the menu can
+# color them: green = installed and latest, yellow = installed but upgradable,
+# default = not installed. Results are cached in PKG_STATUS (tag -> state) and
+# computed once before the menu opens; refresh_pkg_status recomputes after the
+# 'u' update action so colors stay accurate if the menu is redrawn.
+#
+# "Upgradable" is read from the apt package index via `apt list --upgradable`.
+# That reflects the last `apt update`: a stale index may report "latest" for a
+# tool that has a newer version upstream. The menu legend says so.
+declare -A PKG_STATUS=()
+
+probe_pkg_status() {
+    PKG_STATUS=()
+    local upgradable c p pkgs missing=0 outdated=0
+    upgradable=" $({ apt list --upgradable 2>/dev/null || true; } | awk -F/ 'NR>1 && $1!="" {print $1}') "
+    for c in "${PKG_TOOL_COMPONENTS[@]}"; do
+        missing=0; outdated=0
+        for p in ${PKG_COMPONENT[$c]}; do
+            if ! dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "ok installed"; then
+                missing=1
+                break
+            fi
+            case "$upgradable" in
+                *" $p "*) outdated=1 ;;
+            esac
+        done
+        if [ "$missing" -eq 1 ]; then
+            PKG_STATUS[$c]="missing"
+        elif [ "$outdated" -eq 1 ]; then
+            PKG_STATUS[$c]="outdated"
+        else
+            PKG_STATUS[$c]="current"
+        fi
+    done
+}
+
+# Status suffix appended to the pkg-tool description in the menu
+# ("[installed]" / "[update available]"); empty for missing tools.
+pkg_status_suffix() {
+    case "${PKG_STATUS[$1]:-missing}" in
+        current)  printf ' [installed]' ;;
+        outdated) printf ' [update available]' ;;
+        *)        printf '' ;;
+    esac
+}
+
 # Append a line to ~/.bashrc only if it is not already present.
 ensure_bashrc_line() {
     local line="$1"
@@ -265,10 +313,21 @@ ensure_bashrc_line() {
 # with the currently toggled-on tags in the environment variable TUI_ON_TAGS.
 # TUI_EXTRA_BUSY is an immediate "working" notice printed above the (captured)
 # action output, so a slow action does not look like a frozen UI.
+# TUI_ITEM_COLOR is an optional parallel array (one entry per item, separators
+# get an empty entry): an ANSI color code applied to the item's text so callers
+# can highlight entries (e.g. installed = green, upgradable = yellow).
+# TUI_REFRESH_FN is an optional function name called after an extra action
+# finishes, so the caller can refresh per-item state (like TUI_ITEM_COLOR)
+# before the menu redraws.
+# TUI_LEGEND, when non-empty, adds one status-legend line under the help lines
+# (green = installed, yellow = update available).
 TUI_EXTRA_KEYS=()
 TUI_EXTRA_DESCS=()
 TUI_EXTRA_BUSY=()
 TUI_EXTRA_FNS=()
+TUI_ITEM_COLOR=()
+TUI_REFRESH_FN=""
+TUI_LEGEND=""
 
 tui_checklist() {
     local title="$1" result_var="$2"
@@ -299,7 +358,9 @@ tui_checklist() {
     while [ "$cur" -lt "$n" ] && [ "${kinds[$cur]}" = sep ]; do cur=$((cur + 1)); done
     if [ "$cur" -ge "$n" ]; then printf -v "$result_var" '%s' ""; return 0; fi
     local extra=${#TUI_EXTRA_KEYS[@]}
-    local lines=$((n + 3 + extra))   # title + items + 2 help lines (+ one per extra key)
+    local legend_lines=0
+    [ -n "${TUI_LEGEND:-}" ] && legend_lines=1
+    local lines=$((n + 3 + extra + legend_lines))   # title + items + 2 help lines (+ legend + one per extra key)
     local i
 
     # Terminal width. Truncate every rendered line to fit so that nothing
@@ -345,12 +406,20 @@ tui_checklist() {
                 printf '%s%s%s\033[K\n' "$C_HL" "$sep_line" "$C_RESET"
                 continue
             fi
-            local mark="[ ]" line
+            local mark="[ ]" line item_color=""
             [ "${states[$i]}" = on ] && mark="[x]"
+            # Per-item status color (set by the caller via TUI_ITEM_COLOR):
+            # green = installed+latest, yellow = installed+upgradable.
+            # The cursor row keeps its blue highlight so it stays visible.
+            [ "${#TUI_ITEM_COLOR[@]}" -gt "$i" ] && item_color="${TUI_ITEM_COLOR[$i]}"
             if [ "$i" -eq "$cur" ]; then
                 line="> $mark ${descs[$i]}"
                 _tui_fit line
                 printf '%s%s%s\033[K\n' "$C_BLUE" "$line" "$C_RESET"
+            elif [ -n "$item_color" ]; then
+                line="  $mark ${descs[$i]}"
+                _tui_fit line
+                printf '%s%s%s\033[K\n' "$item_color" "$line" "$C_RESET"
             else
                 line="  $mark ${descs[$i]}"
                 _tui_fit line
@@ -359,6 +428,9 @@ tui_checklist() {
         done
         _tui_line "$C_KEY" 'Up' "$C_DIM" '/' "$C_KEY" 'Down' "$C_DIM" ' move  ' "$C_KEY" 'Space' "$C_DIM" ' toggle'
         _tui_line "$C_KEY" 'a' "$C_DIM" ' all  ' "$C_KEY" 'Enter' "$C_DIM" ' confirm  ' "$C_KEY" 'q' "$C_DIM" ' quit'
+        if [ -n "${TUI_LEGEND:-}" ]; then
+            _tui_line "$C_OK" 'green' "$C_DIM" ' = installed  ' "$C_YELLOW" 'yellow' "$C_DIM" ' = update available'
+        fi
         local ei
         for ((ei = 0; ei < extra; ei++)); do
             _tui_line "$C_KEY" "${TUI_EXTRA_KEYS[$ei]}" "$C_DIM" " ${TUI_EXTRA_DESCS[$ei]}"
@@ -420,6 +492,11 @@ tui_checklist() {
                 IFS= read -rsn1 _ || true
                 printf '\033[%dA\033[J' "$((ol + 1))"
                 tput civis 2>/dev/null || true
+                # Let the caller refresh per-item state (e.g. pkg status colors
+                # after the 'u' update action) before the menu redraws.
+                if [ -n "$TUI_REFRESH_FN" ]; then
+                    "$TUI_REFRESH_FN"
+                fi
                 _tui_render
                 continue
             fi
@@ -566,6 +643,45 @@ menu_update_tools() {
 }
 
 # ------------------------------------------------------------- menu (TUI) ----
+# Colors for pkg-tool rows by probe state. Missing tools keep the default dim
+# color; installed+latest rows are green, installed+upgradable rows are yellow.
+menu_pkg_color() {
+    case "${PKG_STATUS[$1]:-missing}" in
+        current)  printf '%s' "$C_OK" ;;
+        outdated) printf '%s' "$C_YELLOW" ;;
+        *)        printf '' ;;
+    esac
+}
+
+# Rebuild TUI_ITEM_COLOR after a status change (e.g. after the 'u' update
+# action): one entry per menu row, in the same order the rows were built.
+refresh_menu_colors() {
+    local i=0
+    TUI_ITEM_COLOR=()
+    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # sep: 3rd-party tools
+    for _c in "${THIRD_PARTY_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]=""; ((i++)) || true; done
+    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # sep: pkg tools
+    for _c in "${PKG_TOOL_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]="$(menu_pkg_color "$_c")"; ((i++)) || true; done
+    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # apt_upgrade option
+    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # no_storage option
+    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # kilocode_native option
+}
+
+# Re-probe pkg status and rebuild the row colors. Wired as TUI_REFRESH_FN so
+# colors update right after the 'u' action without leaving the menu.
+refresh_pkg_status() {
+    probe_pkg_status
+    refresh_menu_colors
+    # Refresh the pkg-row descriptions' status suffixes in place.
+    local i
+    for ((i = 0; i < n; i++)); do
+        [ "${kinds[$i]}" = item ] || continue
+        case " ${PKG_TOOL_COMPONENTS[*]} " in
+            *" ${tags[i]} "*) descs[i]="${COMP_DESC[${tags[i]}]}$(pkg_status_suffix "${tags[i]}")" ;;
+        esac
+    done
+}
+
 show_menu() {
     export TERM="${TERM:-xterm-256color}"
 
@@ -576,8 +692,10 @@ show_menu() {
         items+=("$c|${COMP_DESC[$c]}|on")
     done
     items+=("sep|pkg tools")
+    info "Checking installed pkg tools..."
+    probe_pkg_status
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
-        items+=("$c|${COMP_DESC[$c]}|on")
+        items+=("$c|${COMP_DESC[$c]}$(pkg_status_suffix "$c")|on")
     done
     items+=("apt_upgrade|OPTION: apt update & upgrade before installing (recommended)|$([ "$APT_UPGRADE" -eq 1 ] && echo on || echo off)")
     items+=("no_storage|OPTION: skip termux-setup-storage (shared storage)|$([ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off)")
@@ -589,18 +707,25 @@ show_menu() {
     TUI_EXTRA_BUSY=("Saving Kilo settings and tokens, please wait..."
                     "Updating installed tools; this can take several minutes...")
     TUI_EXTRA_FNS=("menu_save_kilo" "menu_update_tools")
+    # Status colors for pkg rows (green = installed+latest, yellow =
+    # installed+upgradable, default = missing); refreshed after 'u'.
+    refresh_menu_colors
+    TUI_REFRESH_FN="refresh_pkg_status"
+    TUI_LEGEND="pkg-status"
 
     # Vertical fit: the redraw moves the cursor up one line per rendered line,
     # so if the block is taller than the screen the display corrupts. Fall
     # back to installing everything instead of drawing a broken menu.
-    local rows est
+    local rows est legend_extra=0
     rows=$(tput lines 2>/dev/null) || rows=""
     case "$rows" in ''|*[!0-9]*) rows="${LINES:-24}" ;; esac
-    est=$(( ${#items[@]} + 3 + ${#TUI_EXTRA_KEYS[@]} ))   # title + 2 help lines + extra keys
+    [ -n "$TUI_LEGEND" ] && legend_extra=1
+    est=$(( ${#items[@]} + 3 + ${#TUI_EXTRA_KEYS[@]} + legend_extra ))   # title + 2 help lines + legend + extra keys
     if [ "$est" -ge "$rows" ]; then
         warn "Menu needs $est rows, terminal has $rows"
         info "Skipping the menu; all components will be installed. Use -y for a quiet run."
         TUI_EXTRA_KEYS=(); TUI_EXTRA_DESCS=(); TUI_EXTRA_BUSY=(); TUI_EXTRA_FNS=()
+        TUI_ITEM_COLOR=(); TUI_REFRESH_FN=""; TUI_LEGEND=""
         return 0
     fi
 
@@ -615,6 +740,9 @@ show_menu() {
     TUI_EXTRA_DESCS=()
     TUI_EXTRA_BUSY=()
     TUI_EXTRA_FNS=()
+    TUI_ITEM_COLOR=()
+    TUI_REFRESH_FN=""
+    TUI_LEGEND=""
 
     # Reset then apply component selections.
     for c in "${ALL_COMPONENTS[@]}"; do SELECTED[$c]=0; done

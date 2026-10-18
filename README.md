@@ -167,6 +167,16 @@ Upstream sources used by the git/core/rish stages:
 In the TUI the shortcut keys are rendered in bold white (Up, Down, Space, a,
 s, u, Enter, q) next to their dim descriptions so they stand out.
 
+Pkg-tool rows are colored by install state: **green** = installed and at the
+latest version, **yellow** = installed but an update is available (suffixed
+`[update available]`), default dim color = not installed. Installed rows also
+carry an `[installed]` suffix. The legend under the menu explains the colors,
+and the cursor row keeps its blue highlight so it stays visible. Colors are
+re-probed after the `u` update action, so they refresh without leaving the
+menu. "Latest" is read from the apt package index (`apt list --upgradable`),
+so it reflects the last `apt update` — a stale index may show green for a
+tool that has a newer version upstream.
+
 ## Update (menu key 'u')
 
 Refreshes tools without leaving the menu:
@@ -290,9 +300,9 @@ sshd                      # start the server
 ssh -p 8022 <user>@<device-ip>   # connect from another machine
 pkill sshd                # stop the server
 ```
-**Version: 0.7.** The version is defined once as `$SCRIPT_VERSION` in the
+**Version: 0.8.** The version is defined once as `$SCRIPT_VERSION` in the
 config block, echoed by `-V`/`--version`, shown in the menu title and the
-final summary, and mirrored in the script file header (`Version: 0.7`).
+final summary, and mirrored in the script file header (`Version: 0.8`).
 Bump all of them together if/when changing the script.
 
 ## Notes / limitations
