@@ -2,9 +2,9 @@
 
 Fresh-install installer for a new Termux instance.
 
-**Version: 0.5.** The version is defined once as `$SCRIPT_VERSION` in the
+**Version: 0.6.** The version is defined once as `$SCRIPT_VERSION` in the
 config block, echoed by `-V`/`--version`, shown in the menu title and the
-final summary, and mirrored in the script file header (`Version: 0.5`).
+final summary, and mirrored in the script file header (`Version: 0.6`).
 Bump all of them together when changing the script.
 
 ## Overview
@@ -65,6 +65,7 @@ toggles are listed last.
 | rust       | rust - Rust toolchain (jiter/pydantic-core)         | `rust binutils`     |
 | shellcheck | shellcheck - shell script static analysis           | `shellcheck`        |
 | sqlite     | sqlite - SQLite database CLI (sqlite3)              | `sqlite`            |
+| ssh        | ssh - OpenSSH server + client (sshd on port 8022)   | `openssh`           |
 | telnet     | telnet                                              | `inetutils`         |
 | uv         | uv - Astral Python toolchain                        | `uv`                |
 | zellij     | zellij - terminal multiplexer                       | `zellij`            |
@@ -249,6 +250,18 @@ shizuku-status            # if termux-shizuku-tools was installed
 rish                      # if the rish component was installed (needs Shizuku)
 core list                 # browse core-termux modules
 kilocode                  # AI agent (also symlinked as `kilo`)
+```
+
+### SSH server (if the `ssh` component was installed)
+
+The component installs `openssh` (Termux sshd listens on **port 8022**).
+`openssh` stays in the base dependencies too, since git and other stages need
+the client — deselecting `ssh` in the menu only skips the verification hint.
+
+```bash
+sshd                      # start the server
+ssh -p 8022 <user>@<device-ip>   # connect from another machine
+pkill sshd                # stop the server
 ```
 
 ## Notes / limitations
