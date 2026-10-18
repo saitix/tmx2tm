@@ -882,18 +882,38 @@ setup_starship_init() {
 }
 
 install_pkg_tools() {
+    # Skip selected tools already installed at the latest version (green in the
+    # menu). The probe runs before the menu; for non-menu runs (-y / no TTY /
+    # short terminal) PKG_STATUS is empty, so probe here to get the same skip.
+    # update_apt runs first and refreshes the index, so probe AFTER it to avoid
+    # trusting a stale "latest". A fresh probe costs ~0.2s for all pkg tools.
+    if [ "${#PKG_STATUS[@]}" -eq 0 ]; then
+        probe_pkg_status
+    fi
+
     local pkgs=()
+    local skipped=()
     local c p bin
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
         is_selected "$c" || continue
+        if [ "${PKG_STATUS[$c]:-missing}" = "current" ]; then
+            skipped+=("$c")
+            continue
+        fi
         for p in ${PKG_COMPONENT[$c]}; do pkgs+=("$p"); done
     done
-    [ "${#pkgs[@]}" -gt 0 ] || return 0
 
-    step "Installing pkg tools"
-    info "pkg install: ${pkgs[*]}"
-    pkg install -y "${pkgs[@]}" || die "Failed to install pkg tools"
-    ok "pkg tools installed"
+    if [ "${#skipped[@]}" -gt 0 ]; then
+        info "Already installed (latest), skipping: ${skipped[*]}"
+    fi
+    if [ "${#pkgs[@]}" -eq 0 ]; then
+        info "All selected pkg tools are already installed at the latest version"
+    else
+        step "Installing pkg tools"
+        info "pkg install: ${pkgs[*]}"
+        pkg install -y "${pkgs[@]}" || die "Failed to install pkg tools"
+        ok "pkg tools installed"
+    fi
 
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
         is_selected "$c" || continue

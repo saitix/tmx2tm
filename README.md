@@ -188,6 +188,13 @@ menu. "Latest" is read from the apt package index (`apt list --upgradable`),
 so it reflects the last `apt update` — a stale index may show green for a
 tool that has a newer version upstream.
 
+At install time, selected pkg tools that are already at the latest version
+(green) are skipped — only missing or upgradable tools are passed to
+`pkg install`. The skip list is printed, and if everything selected is
+already current the install step is omitted entirely. For non-menu runs
+(`-y` / no TTY) the status is probed at the pkg stage, after `apt update`,
+so the same skip applies.
+
 ## Update (menu key 'u')
 
 Refreshes tools without leaving the menu:
