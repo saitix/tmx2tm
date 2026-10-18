@@ -198,6 +198,13 @@ remote; core/kilocode/rish count as installed when their binaries exist. The
 probes run in parallel in the background (about a second for all tools) with
 a purple "please wait" notice while they run.
 
+Before probing, the installer checks connectivity to the three source
+families (GitHub, PyPI, and the configured apt mirror) and prints the result
+(`Connectivity: github=1 pypi=1 pkg-mirror=1`). Red verdicts require the
+corresponding source to be reachable: in airplane mode an unreachable repo
+is "unknown", not "gone" — installed tools stay green, missing tools stay
+dim — so offline never paints false reds.
+
 At install time, green tools (already at the latest version) are not
 reinstalled: in the menu they default to **unchecked**, so confirming without
 touching them skips the pointless reinstall and the toggles stay consistent

@@ -344,6 +344,38 @@ menu_default_state() {
 declare -A TP_STATUS=()
 declare -A TP_BROKEN_WHY=()
 
+# Connectivity flags (1 = reachable, 0 = not), set by check_connectivity
+# before any network probe runs. Red verdicts REQUIRE the corresponding source
+# to be reachable: when offline, an unreachable repo is "unknown", not
+# "gone" — installed tools fall back to current (green), missing tools to
+# missing (dim). This keeps airplane mode from painting everything red.
+NET_GITHUB=0
+NET_PYPI=0
+NET_PKG=0
+
+# Fast parallel reachability check for the three source families the probes
+# depend on: github (git tools), PyPI (pip tools), and the configured apt
+# mirror (pkg index freshness). Each curl is capped at 5s; the three run in
+# parallel so the worst case is ~5s, and offline fails fast (no route).
+check_connectivity() {
+    NET_GITHUB=0; NET_PYPI=0; NET_PKG=0
+    local tmpnet mirror
+    tmpnet=$(mktemp -d 2>/dev/null) || return 0
+    ( curl -fsSL --max-time 5 -o /dev/null https://github.com >/dev/null 2>&1 \
+        && echo 1 >"$tmpnet/gh" || echo 0 >"$tmpnet/gh" ) &
+    ( curl -fsSL --max-time 5 -o /dev/null https://pypi.org/simple/ >/dev/null 2>&1 \
+        && echo 1 >"$tmpnet/pypi" || echo 0 >"$tmpnet/pypi" ) &
+    mirror=$(apt-cache policy 2>/dev/null | grep -o 'http[^ ]*' | head -1)
+    ( [ -n "$mirror" ] && curl -fsSL --max-time 5 -o /dev/null "$mirror" >/dev/null 2>&1 \
+        && echo 1 >"$tmpnet/pkg" || echo 0 >"$tmpnet/pkg" ) &
+    wait
+    NET_GITHUB=$(cat "$tmpnet/gh" 2>/dev/null || echo 0)
+    NET_PYPI=$(cat "$tmpnet/pypi" 2>/dev/null || echo 0)
+    NET_PKG=$(cat "$tmpnet/pkg" 2>/dev/null || echo 0)
+    rm -rf "$tmpnet"
+    info "Connectivity: github=$NET_GITHUB pypi=$NET_PYPI pkg-mirror=$NET_PKG"
+}
+
 # Upstream git repo (owner/repo) for the tools fetched from git. Tools without
 # an entry (pip packages, kilocode via core) skip the git reachability check.
 declare -A TP_GIT_REPO=(
@@ -406,6 +438,12 @@ tp_probe_pip() {
         fi
         return
     fi
+    # Index unreadable: only PyPI itself can tell "removed" from "offline".
+    # No PyPI reachability -> unknown, not gone: installed stays current.
+    if [ "$NET_PYPI" -eq 0 ]; then
+        printf 'current\n\n'
+        return
+    fi
     if curl -fsSL --max-time 8 "https://pypi.org/simple/$pkg/" >/dev/null 2>&1; then
         printf 'current\n\n'
     else
@@ -415,12 +453,19 @@ tp_probe_pip() {
 
 # Probe one git-based tool (shizuku, core, rish installer repo).
 # Not installed: the source must be alive for an install to work — dead source
-# means broken. Installed: compare local HEAD with the remote (shizuku has a
-# real clone); archived upstream always means broken per the red rule.
+# means broken, but only when GitHub itself is reachable (offline verdicts
+# would be false reds: missing stays missing). Installed: compare local HEAD
+# with the remote (shizuku has a real clone); archived upstream always means
+# broken per the red rule (the API call only runs when GitHub is reachable,
+# so an archived verdict is trustworthy).
 tp_probe_git() {
     local tag="$1" repo="${TP_GIT_REPO[$1]}"
     local state remote_head local_head
     if ! tp_installed "$tag"; then
+        if [ "$NET_GITHUB" -eq 0 ]; then
+            printf 'missing\n\n'
+            return
+        fi
         state="$(tp_git_repo_state "$repo")"
         case "$state" in
             ok)         printf 'missing\n\n' ;;
@@ -430,6 +475,12 @@ tp_probe_git() {
         return
     fi
     if [ "$tag" = "shizuku" ]; then
+        if [ "$NET_GITHUB" -eq 0 ]; then
+            # Offline: cannot diff against the remote; the working clone
+            # counts as current rather than broken.
+            printf 'current\n\n'
+            return
+        fi
         remote_head=$(git ls-remote "https://github.com/$repo.git" HEAD 2>/dev/null | awk '{print $1}')
         if [ -z "$remote_head" ]; then
             printf 'broken\nsource unreachable\n'
@@ -446,8 +497,12 @@ tp_probe_git() {
         fi
         return
     fi
-    # core / rish: no local clone to diff; installed means working. An archived
-    # upstream still counts as broken per the red rule.
+    # core / rish: no local clone to diff; installed means working. Offline or
+    # API-silent means current; only a reachable-but-archived upstream is red.
+    if [ "$NET_GITHUB" -eq 0 ]; then
+        printf 'current\n\n'
+        return
+    fi
     state="$(tp_git_repo_state "$repo")"
     case "$state" in
         archived)   printf 'broken\narchived\n' ;;
@@ -468,10 +523,11 @@ probe_tp_one() {
     esac
 }
 
-# Probe all 3rd-party tools in parallel background jobs. Each job writes its
-# two-line result to a temp file; this function waits for all of them, then
-# fills TP_STATUS / TP_BROKEN_WHY. Slow networks are bounded by the per-call
-# --max-time flags inside the probes.
+# Probe all 3rd-party tools in parallel background jobs. Runs check_connectivity
+# first so offline verdicts stay honest (no false reds in airplane mode).
+# Each job writes its two-line result to a temp file; this function waits for
+# all of them, then fills TP_STATUS / TP_BROKEN_WHY. Slow networks are bounded
+# by the per-call --max-time flags inside the probes.
 probe_tp_status() {
     TP_STATUS=()
     TP_BROKEN_WHY=()
@@ -895,6 +951,7 @@ refresh_menu_colors() {
 # leaving it. Green tools go off (nothing to do), broken tools go off
 # (nothing can be done); missing/yellow rows keep the user's toggle.
 refresh_menu_status() {
+    check_connectivity
     probe_pkg_status
     probe_tp_status
     refresh_menu_colors
@@ -919,6 +976,10 @@ show_menu() {
     local -a items=()
     local c
     items+=("sep|3rd-party tools")
+    # Connectivity first: without it, offline verdicts would paint false reds.
+    # Purple announce — the parallel network probes take a few seconds.
+    announce "Checking connectivity, please wait..."
+    check_connectivity
     announce "Checking 3rd-party tools (network check, please wait)..."
     probe_tp_status
     for c in "${THIRD_PARTY_COMPONENTS[@]}"; do
@@ -1506,6 +1567,7 @@ main() {
     # Menu runs reuse the pre-menu probe, refreshed by the 'u' action.
     if [ "$MENU_CONFIRMED" -eq 0 ]; then
         announce "Probing installed tools, please wait..."
+        check_connectivity
         probe_pkg_status
         probe_tp_status
     fi

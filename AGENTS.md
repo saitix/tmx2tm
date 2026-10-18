@@ -51,4 +51,8 @@ Minimal instructions for agents working in this repo.
    - 3rd-party probes live in `probe_tp_one` (pip via `pip index versions`,
      git via `ls-remote` + archived API check); `probe_tp_status` runs them
      in parallel. Every network call needs a `--max-time` cap.
+   - `check_connectivity` MUST run before any network probe (menu, refresh,
+     non-menu flow). Red verdicts require reachability: offline means
+     installed→current, missing→missing — never broken. Gate new red logic
+     on `NET_GITHUB` / `NET_PYPI` accordingly.
    - The `u`-action refresh is `refresh_menu_status` (both groups + toggles).
