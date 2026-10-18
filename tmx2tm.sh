@@ -12,7 +12,7 @@
 # (Do NOT pipe curl into bash: the script reads stdin for its interactive
 # menu, so `curl ... | bash` would break the TUI.)
 #
-# Version: 0.6
+# Version: 0.7
 #
 # Installs (selectable via a built-in arrow-key TUI, or non-interactive with -y).
 # Components are grouped and sorted alphabetically, mirroring the menu order:
@@ -38,6 +38,7 @@
 #     ShellCheck             (shell script static analysis)
 #     sqlite                 (SQLite database CLI, sqlite3)
 #     ssh                    (OpenSSH server/client; sshd on port 8022)
+#     starship               (cross-shell prompt, starship.rs)
 #     telnet                 (from inetutils)
 #     uv                     (Astral Python toolchain)
 #     zellij                 (terminal multiplexer)
@@ -87,7 +88,7 @@ warn() { printf '    %s[!]%s %s\n' "$C_WARN" "$C_RESET" "$1"; }
 die()  { printf '\n%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
 
 # ---------------------------------------------------------------- config ----
-SCRIPT_VERSION="0.6"
+SCRIPT_VERSION="0.7"
 REPO_SHIZUKU="https://github.com/jecis-repos/termux-shizuku-tools.git"
 REPO_CORE_INSTALL="https://raw.githubusercontent.com/DevCoreXOfficial/core-termux/main/install.sh"
 REPO_RISH_INSTALL="https://raw.githubusercontent.com/merbah3266/rish_installer/main/rish_installer.sh"
@@ -106,7 +107,7 @@ BASE_PKG_DEPS=(
 # Selectable components: 3rd-party tools, then pkg tools. Each group is
 # alphabetical. The menu renders a separator header before each group.
 THIRD_PARTY_COMPONENTS=(copyparty core kilocode pydf rish shizuku ytdlp)
-PKG_TOOL_COMPONENTS=(bat dig elinks golang mc neofetch ranger rust shellcheck sqlite ssh telnet uv zellij)
+PKG_TOOL_COMPONENTS=(bat dig elinks golang mc neofetch ranger rust shellcheck sqlite ssh starship telnet uv zellij)
 ALL_COMPONENTS=("${THIRD_PARTY_COMPONENTS[@]}" "${PKG_TOOL_COMPONENTS[@]}")
 
 # Components that are simple pkg packages -> pkg name(s). A value may list more
@@ -125,6 +126,7 @@ declare -A PKG_COMPONENT=(
     [ranger]=ranger
     [sqlite]=sqlite
     [ssh]=openssh
+    [starship]=starship
     [rust]="rust binutils"      # toolchain + ar/ld, needed to build Rust extensions
 )
 
@@ -160,6 +162,7 @@ declare -A COMP_DESC=(
     [shellcheck]="shellcheck - shell script static analysis (pkg)"
     [sqlite]="sqlite - SQLite database CLI (sqlite3)"
     [ssh]="ssh - OpenSSH server + client (pkg; sshd on port 8022)"
+    [starship]="starship - cross-shell prompt (pkg)"
     [telnet]="telnet - inetutils"
     [uv]="uv - Astral Python toolchain (pkg)"
     [zellij]="zellij - terminal multiplexer (pkg)"
@@ -183,6 +186,7 @@ declare -A COMP_HINT=(
     [shellcheck]="shellcheck --version"
     [sqlite]="sqlite3 my.db"
     [ssh]="sshd (port 8022); ssh -p 8022 <host>"
+    [starship]="starship --version"
     [telnet]="telnet <host> <port>"
     [uv]="uv --version"
     [zellij]="zellij"

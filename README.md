@@ -92,6 +92,7 @@ toggles are listed last.
 | shellcheck | shellcheck - shell script static analysis           | `shellcheck`        |
 | sqlite     | sqlite - SQLite database CLI (sqlite3)              | `sqlite`            |
 | ssh        | ssh - OpenSSH server + client (sshd on port 8022)   | `openssh`           |
+| starship   | starship - cross-shell prompt (starship.rs)         | `starship`          |
 | telnet     | telnet                                              | `inetutils`         |
 | uv         | uv - Astral Python toolchain                        | `uv`                |
 | zellij     | zellij - terminal multiplexer                       | `zellij`            |
@@ -289,9 +290,9 @@ sshd                      # start the server
 ssh -p 8022 <user>@<device-ip>   # connect from another machine
 pkill sshd                # stop the server
 ```
-**Version: 0.6.** The version is defined once as `$SCRIPT_VERSION` in the
+**Version: 0.7.** The version is defined once as `$SCRIPT_VERSION` in the
 config block, echoed by `-V`/`--version`, shown in the menu title and the
-final summary, and mirrored in the script file header (`Version: 0.6`).
+final summary, and mirrored in the script file header (`Version: 0.7`).
 Bump all of them together if/when changing the script.
 
 ## Notes / limitations
