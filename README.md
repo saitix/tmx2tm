@@ -132,6 +132,13 @@ bash.
 | apt_upgrade     | apt update & upgrade before installing (recommended; on by default) |
 | no_storage      | skip termux-setup-storage                                           |
 | kilocode_native | kilocode: auto-pick the recommended native method (no prompt)       |
+| cleanup         | cleanup install stubs + caches after installing (off by default)    |
+
+The `cleanup` pass runs last and removes only throwaway leftovers from the
+3rd-party stages: pip/uv caches and build dirs, `apt clean` + `autoremove`,
+cargo/go build caches, npm cache, temp downloads (`$TMPDIR`), and stale
+`__pycache__`/`*.pyc` inside the tool dirs. Installed tools are never touched;
+it reports roughly how many MB were freed.
 
 Upstream sources used by the git/core/rish stages:
 
@@ -272,6 +279,7 @@ download or source build is never mistaken for a frozen menu.
 | `--no-storage`          | skip the termux-setup-storage permission prompt            |
 | `--no-apt-upgrade`      | skip the apt update & upgrade + mirror check stage         |
 | `--kilocode-native`     | kilocode: auto-pick the recommended glibc method           |
+| `--cleanup`             | cleanup install stubs + caches after installing            |
 | `--save-kilo[=PATH]`    | back up current Kilo settings + tokens, then exit (default: `~/.kilo-backup.tar.gz`) |
 | `--restore-kilo[=PATH]` | restore that backup, then continue installing              |
 | `-V`, `--version`       | print the script version and exit                          |

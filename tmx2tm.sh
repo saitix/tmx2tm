@@ -54,6 +54,7 @@
 #   bash tmx2tm.sh -y              # non-interactive: install everything
 #   bash tmx2tm.sh --no-storage    # skip termux-setup-storage prompt
 #   bash tmx2tm.sh --no-apt-upgrade    # skip the apt update/upgrade + repo check
+#   bash tmx2tm.sh --cleanup           # remove install stubs + caches after installing
 #   bash tmx2tm.sh --kilocode-native   # kilocode: auto-pick recommended glibc method
 #   bash tmx2tm.sh --menu          # force the menu even next to other flags
 #   bash tmx2tm.sh --save-kilo[=PATH]      # back up current Kilo settings + tokens (default ~/.kilo-backup.tar.gz)
@@ -217,6 +218,7 @@ DEFAULT_KILO_BACKUP="$HOME/.kilo-backup.tar.gz"
 SETUP_STORAGE=1
 KILOCODE_NATIVE=0
 APT_UPGRADE=1     # run apt update & upgrade (and pick a mirror) before pkg stages
+CLEANUP=0         # remove install stubs + caches after installing
 SHOW_MENU=auto   # auto | force | never
 SAVE_KILO=0
 RESTORE_KILO=0
@@ -227,6 +229,7 @@ for arg in "$@"; do
     case "$arg" in
         --no-storage)       SETUP_STORAGE=0 ;;
         --no-apt-upgrade)   APT_UPGRADE=0 ;;
+        --cleanup)            CLEANUP=1 ;;
         --kilocode-native)  KILOCODE_NATIVE=1 ;;
         --menu)             SHOW_MENU=force ;;
         -y|--yes|--no-menu) SHOW_MENU=never ;;
@@ -991,6 +994,7 @@ refresh_menu_colors() {
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # apt_upgrade option
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # no_storage option
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # kilocode_native option
+    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # cleanup option
 }
 
 # Re-probe all statuses and rebuild row colors, suffixes, and toggles. Wired
@@ -1051,6 +1055,7 @@ show_menu() {
     items+=("apt_upgrade|OPTION: apt update & upgrade before installing (recommended)|$([ "$APT_UPGRADE" -eq 1 ] && echo on || echo off)")
     items+=("no_storage|OPTION: skip termux-setup-storage (shared storage)|$([ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off)")
     items+=("kilocode_native|OPTION: kilocode - pick recommended native method (no prompt)|$([ "$KILOCODE_NATIVE" -eq 1 ] && echo on || echo off)")
+    items+=("cleanup|OPTION: cleanup install stubs + caches after installing|$([ "$CLEANUP" -eq 1 ] && echo on || echo off)")
 
     # Shortcut keys: 's' saves a Kilo backup, 'u' updates what is installed,
     # 'p' installs prerequisites on demand (fresh Termux) and reloads the menu.
@@ -1276,6 +1281,7 @@ apply_menu_result() {
     SETUP_STORAGE=1
     KILOCODE_NATIVE=0
     APT_UPGRADE=0
+    CLEANUP=0
 
     local tag
     for tag in $result; do
@@ -1283,6 +1289,7 @@ apply_menu_result() {
             no_storage)      SETUP_STORAGE=0 ;;
             kilocode_native) KILOCODE_NATIVE=1 ;;
             apt_upgrade)     APT_UPGRADE=1 ;;
+            cleanup)         CLEANUP=1 ;;
             *) [ -n "${SELECTED[$tag]:-}" ] && SELECTED[$tag]=1 ;;
         esac
     done
@@ -1747,6 +1754,60 @@ install_kilocode() {
     fi
 }
 
+# Remove install stubs + caches left behind by the 3rd-party stages: pip
+# cache/wheels, apt archives, cargo/rust build cache, go build cache, uv/node
+# caches, and temp downloads. Safe to run repeatedly; only caches are removed,
+# never installed tools.
+cleanup_stubs() {
+    [ "$CLEANUP" -eq 1 ] || return 0
+
+    step "Cleaning up install stubs + caches"
+    local freed_before freed_after
+    freed_before=$(du -sb "$HOME" 2>/dev/null | awk '{print $1}')
+
+    if command -v pip >/dev/null 2>&1; then
+        pip cache purge >/dev/null 2>&1 || info "pip cache: nothing to purge"
+    fi
+    command -v pip3 >/dev/null 2>&1 && pip3 cache purge >/dev/null 2>&1 || true
+    # pip build dirs outside the cache (wheels, isolated-build envs, uv cache).
+    rm -rf "$HOME/.cache/pip" "$HOME/.cache/uv" \
+        "$TMPDIR/pip-"* "$TMPDIR/pip_build_"* "$PREFIX/tmp/pip-"* 2>/dev/null || true
+    info "pip/uv caches cleared"
+
+    if command -v apt >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt clean -y >/dev/null 2>&1 \
+            || warn "apt clean reported errors"
+        DEBIAN_FRONTEND=noninteractive apt autoremove -y >/dev/null 2>&1 \
+            || warn "apt autoremove reported errors"
+        info "apt archives + orphans cleared"
+    fi
+
+    # Compiler caches from source-built extensions (jiter/pydantic-core via shizuku).
+    rm -rf "$HOME/.cache/pip" "$HOME/.cargo/registry/cache" "$HOME/.rustup/tmp" 2>/dev/null || true
+    [ -n "${CARGO_HOME:-}" ] && rm -rf "$CARGO_HOME/registry/cache" 2>/dev/null || true
+    command -v cargo >/dev/null 2>&1 && cargo cache -a >/dev/null 2>&1 || true
+    command -v go >/dev/null 2>&1 && go clean -cache -modcache -testcache >/dev/null 2>&1 \
+        || rm -rf "$HOME/.cache/go-build" 2>/dev/null || true
+    info "cargo/go build caches cleared"
+
+    # Node/npm (core installer) and core-termux temp clones.
+    command -v npm >/dev/null 2>&1 && npm cache clean --force >/dev/null 2>&1 || true
+    rm -rf "$HOME/.npm" "$TMPDIR/core-"* "$TMPDIR/rish"* "$TMPDIR/tmp."* 2>/dev/null || true
+    info "npm/core temp stubs cleared"
+
+    # Stale .pyc / __pycache__ shipped inside the tool dirs (regenerated on use).
+    find "$HOME/.local/lib" "$SHIZUKU_DIR" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+    find "$HOME/.local/lib" "$SHIZUKU_DIR" -type f -name '*.pyc' -delete 2>/dev/null || true
+    info "compile caches (__pycache__/*.pyc) cleared"
+
+    freed_after=$(du -sb "$HOME" 2>/dev/null | awk '{print $1}')
+    if [ -n "$freed_before" ] && [ -n "$freed_after" ] && [ "$freed_before" -gt "$freed_after" ] 2>/dev/null; then
+        ok "cleanup freed $(( (freed_before - freed_after) / 1024 / 1024 )) MB"
+    else
+        ok "cleanup finished"
+    fi
+}
+
 print_summary() {
     done_step "Installation complete (tmx2tm.sh v$SCRIPT_VERSION)"
     echo
@@ -1885,6 +1946,7 @@ main() {
     install_rish
     install_core
     install_kilocode
+    cleanup_stubs
     print_summary
 }
 

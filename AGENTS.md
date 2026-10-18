@@ -43,7 +43,7 @@ Minimal instructions for agents working in this repo.
    assumptions intact.
 7. **Commit style:** short imperative subject line (< 72 chars), blank line,
    then a body explaining what and why.
-9. **Color rule.** Every displayed action or status that shows something in
+8. **Color rule.** Every displayed action or status that shows something in
    progress is PURPLE: stage headers via `step()` (purple `==>`), wait
    notices via `announce()`, in-progress sub-statuses via `progress()`
    (purple, info-indented). Static notices stay dim (`info`), results stay
@@ -80,3 +80,6 @@ Minimal instructions for agents working in this repo.
      empty script and exits silently. In-process loops only.
    - Text-menu `r` (zoom out and reload) signals rc 43 for the same loop;
      a reload is a fresh re-probed look, not a resume of picked toggles.
+10. **Auto-commit.** After any addition/correction/removal to the repo,
+    commit the changes with a short/brief summary (per the commit style
+    above). Never `git push` — pushing is always done manually.
