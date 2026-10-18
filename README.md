@@ -18,6 +18,12 @@ This script was assembled by inspecting an existing, working Termux setup and
 copying the exact install steps each tool uses on this device. To recreate it
 elsewhere, reproduce the stages below (sources are listed with each tool).
 
+## Screenshot
+
+The component menu shows installed tools, selectable components, and options:
+
+![tmx2tm.sh v0.9 component menu](https://github.com/user-attachments/assets/fa3f3936-0690-47b5-b54f-cd259f3e4952)
+
 ## Quick start
 
 Run it straight from git (no clone needed). The script is downloaded to a
