@@ -401,6 +401,14 @@ declare -A TP_PIP_NAME=(
 
 # Local presence check per 3rd-party tag. Mirrors what the install stages and
 # the 'u' update action treat as "installed".
+# True when $1 is a symlink whose target does not resolve (stale install
+# link, e.g. $PREFIX/bin/core pointing into a deleted clone). command -v and
+# -x both report "missing" for these, hiding the real cause — detect them
+# explicitly so the menu can mark the row broken with an explainer instead.
+dangling_link() {
+    [ -L "$1" ] && [ ! -e "$1" ]
+}
+
 tp_installed() {
     case "$1" in
         copyparty) command -v copyparty >/dev/null 2>&1 || [ -x "$HOME/.local/bin/copyparty" ] ;;
@@ -532,10 +540,18 @@ tp_probe_git() {
 }
 
 # Probe one 3rd-party tool; prints state on line 1, broken reason on line 2.
+# A dangling install symlink (link present, target gone) is broken regardless
+# of network state — the local install itself is at fault, not the source.
 probe_tp_one() {
     case "$1" in
+        core)
+            if dangling_link "$PREFIX/bin/core"; then
+                printf 'broken\nlink target missing\n'
+                return
+            fi
+            tp_probe_git "$1" ;;
+        shizuku|rish) tp_probe_git "$1" ;;
         copyparty|ytdlp|pydf) tp_probe_pip "$1" ;;
-        shizuku|core|rish)    tp_probe_git "$1" ;;
         kilocode)
             # Installed via core, no own upstream to check: present = current.
             tp_installed kilocode && printf 'current\n\n' || printf 'missing\n\n' ;;
@@ -1668,6 +1684,14 @@ install_core() {
     tp_gate core || return 0
 
     step "Installing core (core-termux)"
+
+    # A dangling symlink (link present, target gone — e.g. pointing into a
+    # deleted clone) explains a red [link target missing] row: say so, then
+    # fall through to the official installer, which re-links correctly.
+    if dangling_link "$PREFIX/bin/core"; then
+        warn "Removing stale core link (target missing: $(readlink "$PREFIX/bin/core"))"
+        rm -f "$PREFIX/bin/core"
+    fi
 
     # TP_FORCE=1 after an explicit menu tick on a green tool: rerun the
     # upstream installer instead of taking the already-installed shortcut.

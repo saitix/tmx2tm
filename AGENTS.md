@@ -69,6 +69,10 @@ Minimal instructions for agents working in this repo.
      non-menu flow). Red verdicts require reachability: offline means
      installed→current, missing→missing — never broken. Gate new red logic
      on `NET_GITHUB` / `NET_PYPI` accordingly.
+   - EXCEPTION: `dangling_link()` (symlink present, target gone) is broken
+     regardless of network — the local install is at fault, not the source.
+     Report as `[link target missing]`; the install stage must remove the
+     stale link and reinstall instead of dying.
    - The `u`-action refresh is `refresh_menu_status` (both groups + toggles).
    - The text fallback menu signals rc 42 after `p`; `show_menu` loops to
      rebuild and re-probe. NEVER re-exec "$0" to reload: under

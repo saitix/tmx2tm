@@ -208,7 +208,10 @@ tool that has a newer version upstream.
 unreachable, archived, or gone (suffixed with the reason, e.g.
 `[source unreachable]`, `[archived]`, `[not on PyPI]`). Red rows default to
 unchecked — installing from a dead source cannot work — and stay skipped
-with a warning even if ticked. Installed pip tools compare `pip show`
+with a warning even if ticked. A stale install symlink (link present, target
+gone — e.g. `$PREFIX/bin/core` pointing into a deleted clone) is also red,
+as `[link target missing]`; selecting it removes the stale link and runs the
+official installer, which re-links correctly. Installed pip tools compare `pip show`
 against `pip index versions`; the shizuku clone compares local HEAD with the
 remote; core/kilocode/rish count as installed when their binaries exist. The
 probes run in parallel in the background (about a second for all tools) with
