@@ -138,7 +138,8 @@ The `cleanup` pass runs last and removes only throwaway leftovers from the
 3rd-party stages: pip/uv caches and build dirs, `apt clean` + `autoremove`,
 cargo/go build caches, npm cache, temp downloads (`$TMPDIR`), and stale
 `__pycache__`/`*.pyc` inside the tool dirs. Installed tools are never touched;
-it reports roughly how many MB were freed.
+it first prints the estimated reclaimable size, then reports how much was
+actually freed (e.g. `cleanup freed 312.4 MB (estimated 315.1 MB)`).
 
 Upstream sources used by the git/core/rish stages:
 

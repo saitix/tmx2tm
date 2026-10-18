@@ -1754,6 +1754,21 @@ install_kilocode() {
     fi
 }
 
+# Human-readable size for byte counts (B/KB/MB/GB with one decimal).
+human_size() {
+    local b="${1:-0}"
+    case "$b" in ''|*[!0-9]*) b=0 ;; esac
+    if [ "$b" -ge 1073741824 ]; then
+        awk -v b="$b" 'BEGIN{printf "%.1f GB", b/1073741824}'
+    elif [ "$b" -ge 1048576 ]; then
+        awk -v b="$b" 'BEGIN{printf "%.1f MB", b/1048576}'
+    elif [ "$b" -ge 1024 ]; then
+        awk -v b="$b" 'BEGIN{printf "%.1f KB", b/1024}'
+    else
+        printf '%s B' "$b"
+    fi
+}
+
 # Remove install stubs + caches left behind by the 3rd-party stages: pip
 # cache/wheels, apt archives, cargo/rust build cache, go build cache, uv/node
 # caches, and temp downloads. Safe to run repeatedly; only caches are removed,
@@ -1762,8 +1777,52 @@ cleanup_stubs() {
     [ "$CLEANUP" -eq 1 ] || return 0
 
     step "Cleaning up install stubs + caches"
-    local freed_before freed_after
-    freed_before=$(du -sb "$HOME" 2>/dev/null | awk '{print $1}')
+
+    # Measure the reclaimable size in advance: du over exactly the paths the
+    # pass removes (existing ones only), so the figure is the cleanup's own
+    # footprint — not whole-$HOME noise from concurrent downloads.
+    local -a _cl=()
+    local _p _pipdir
+    for _p in "$HOME/.cache/pip" "$HOME/.cache/uv" "$HOME/.npm" \
+              "$HOME/.cache/go-build" "$HOME/.cargo/registry/cache" \
+              "$HOME/.rustup/tmp" "${CARGO_HOME:-}/registry/cache" \
+              /var/cache/apt/archives "$PREFIX/var/cache/apt/archives"; do
+        [ -n "$_p" ] && [ -e "$_p" ] && _cl+=("$_p")
+    done
+    for _p in "$TMPDIR"/pip-* "$TMPDIR"/pip_build_* "$PREFIX"/tmp/pip-* \
+              "$TMPDIR"/core-* "$TMPDIR"/rish* "$TMPDIR"/tmp.* \
+              "$HOME/.local/lib" "$SHIZUKU_DIR"; do
+        # globs that match nothing stay literal: keep only existing paths.
+        # shellcheck disable=SC2128  # intentional glob expansion, not $TMPDIR alone
+        [ -e "$_p" ] && _cl+=("$_p")
+    done
+    if command -v pip >/dev/null 2>&1; then
+        _pipdir=$(pip cache dir 2>/dev/null)
+        [ -n "$_pipdir" ] && [ -e "$_pipdir" ] && _cl+=("$_pipdir")
+    fi
+    local reclaim=0 _sz
+    if [ "${#_cl[@]}" -gt 0 ]; then
+        # du once over all candidates; go/shizuku trees need the pyc-only
+        # portion, added separately below.
+        _sz=$(du -sb "${_cl[@]}" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+        case "$_sz" in ''|*[!0-9]*) _sz=0 ;; esac
+        reclaim=$((reclaim + _sz))
+    fi
+    local _pyc
+    _pyc=$(find "$HOME/.local/lib" "$SHIZUKU_DIR" \( -type d -name '__pycache__' -prune \) -o \( -type f -name '*.pyc' -print \) 2>/dev/null \
+        | tr '\n' '\0' | du -sb --files0-from=- 2>/dev/null | tail -1 | awk '{print $1}')
+    case "$_pyc" in ''|*[!0-9]*) _pyc=0 ;; esac
+    reclaim=$((reclaim + _pyc))
+    # Subtract the double-counted pyc portion inside the two trees above: the
+    # trees were measured whole, so add back nothing — instead report the
+    # whole-tree figure as the estimate; the pyc split is informational only.
+    # (Kept simple: estimate = full candidate size, actual = same paths gone.)
+
+    if [ "$reclaim" -gt 0 ]; then
+        progress "Reclaimable: $(human_size "$reclaim") — removing now..."
+    else
+        progress "Nothing reclaimable found — verifying..."
+    fi
 
     if command -v pip >/dev/null 2>&1; then
         pip cache purge >/dev/null 2>&1 || info "pip cache: nothing to purge"
@@ -1800,11 +1859,18 @@ cleanup_stubs() {
     find "$HOME/.local/lib" "$SHIZUKU_DIR" -type f -name '*.pyc' -delete 2>/dev/null || true
     info "compile caches (__pycache__/*.pyc) cleared"
 
-    freed_after=$(du -sb "$HOME" 2>/dev/null | awk '{print $1}')
-    if [ -n "$freed_before" ] && [ -n "$freed_after" ] && [ "$freed_before" -gt "$freed_after" ] 2>/dev/null; then
-        ok "cleanup freed $(( (freed_before - freed_after) / 1024 / 1024 )) MB"
+    local freed_after=0 _left
+    if [ "${#_cl[@]}" -gt 0 ]; then
+        _left=$(du -sb "${_cl[@]}" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+        case "$_left" in ''|*[!0-9]*) _left=0 ;; esac
+        freed_after=$((reclaim > _left ? reclaim - _left : 0))
     else
-        ok "cleanup finished"
+        freed_after="$reclaim"
+    fi
+    if [ "$reclaim" -gt 0 ]; then
+        ok "cleanup freed $(human_size "$freed_after") (estimated $(human_size "$reclaim"))"
+    else
+        ok "cleanup finished — nothing to remove"
     fi
 }
 
