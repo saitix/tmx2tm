@@ -282,11 +282,11 @@ probe_pkg_status() {
 }
 
 # Status suffix appended to the pkg-tool description in the menu
-# ("[installed]" / "[update available]"); empty for missing tools.
+# ("[installed]" / "[update+]"); empty for missing tools.
 pkg_status_suffix() {
     case "${PKG_STATUS[$1]:-missing}" in
         current)  printf ' [installed]' ;;
-        outdated) printf ' [update available]' ;;
+        outdated) printf ' [update+]' ;;
         *)        printf '' ;;
     esac
 }

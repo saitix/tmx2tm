@@ -169,7 +169,7 @@ s, u, Enter, q) next to their dim descriptions so they stand out.
 
 Pkg-tool rows are colored by install state: **green** = installed and at the
 latest version, **yellow** = installed but an update is available (suffixed
-`[update available]`), default dim color = not installed. Installed rows also
+`[update+]`), default dim color = not installed. Installed rows also
 carry an `[installed]` suffix. The legend under the menu explains the colors,
 and the cursor row keeps its blue highlight so it stays visible. Colors are
 re-probed after the `u` update action, so they refresh without leaving the
