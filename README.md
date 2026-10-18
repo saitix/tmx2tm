@@ -350,8 +350,13 @@ Bump all of them together if/when changing the script.
 - Targets aarch64 (all downloads/pkgs are the arm64 Termux builds).
 - The TUI truncates lines to the terminal width, so it renders correctly on
   very narrow screens (e.g. a folded phone). If the terminal is too short
-  to fit the whole checklist, the menu is skipped and every component is
-  installed (the cursor-up redraw needs one line per menu row).
+  to fit the whole checklist, a plain numbered text menu is shown instead
+  (same items and defaults; type numbers to toggle, `a` for all, `s`/`u`
+  for backup/update, Enter to confirm, `q` to quit). The menu always comes
+  first — nothing is installed before you confirm a selection.
+- On a fresh Termux without `git`/`pip` yet, the status probes degrade to
+  presence-only verdicts (installed = green, missing = dim, never red);
+  full version/source checks activate once the base dependencies are in.
 - `apt update` / `apt upgrade` / `pkg install` may print warnings; these are
   non-fatal (the installer warns and keeps going).
 - The "rust" pkg tool (rust + binutils) is large (~640 MB installed). It is

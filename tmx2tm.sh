@@ -349,6 +349,9 @@ declare -A TP_BROKEN_WHY=()
 # to be reachable: when offline, an unreachable repo is "unknown", not
 # "gone" — installed tools fall back to current (green), missing tools to
 # missing (dim). This keeps airplane mode from painting everything red.
+# NET_PKG is informational only (shown in the connectivity line; useful when
+# `apt update` later fails): the pkg probe can only read the local index, and
+# a stale index already carries its documented caveat.
 NET_GITHUB=0
 NET_PYPI=0
 NET_PKG=0
@@ -420,12 +423,18 @@ tp_git_repo_state() {
 }
 
 # Probe one pip-based tool. Installed version comes from `pip show`, latest
-# from `pip index versions`. If the index cannot be read but PyPI itself is
-# alive, the install is fine and the version is just unknown -> current. If
-# PyPI has no such package at all -> broken (e.g. removed or renamed).
+# from `pip index versions`. No pip yet (fresh Termux — pip arrives with the
+# base deps AFTER the menu): presence-only verdict, never red.
+# If the index cannot be read but PyPI itself is alive, the install is fine
+# and the version is just unknown -> current. If PyPI has no such package at
+# all -> broken (e.g. removed or renamed).
 tp_probe_pip() {
     local tag="$1" pkg="${TP_PIP_NAME[$1]}"
     tp_installed "$tag" || { printf 'missing\n\n'; return; }
+    if ! command -v pip >/dev/null 2>&1 && ! command -v pip3 >/dev/null 2>&1; then
+        printf 'current\n\n'
+        return
+    fi
     local inst latest
     inst=$(pip show "$pkg" 2>/dev/null | awk '/^Version: /{print $2; exit}')
     latest=$(pip index versions "$pkg" 2>/dev/null \
@@ -461,6 +470,12 @@ tp_probe_pip() {
 tp_probe_git() {
     local tag="$1" repo="${TP_GIT_REPO[$1]}"
     local state remote_head local_head
+    # No git yet (fresh Termux — git arrives with the base deps AFTER the
+    # menu): presence-only verdict, never red (source state unknown).
+    if ! command -v git >/dev/null 2>&1; then
+        tp_installed "$tag" && printf 'current\n\n' || printf 'missing\n\n'
+        return
+    fi
     if ! tp_installed "$tag"; then
         if [ "$NET_GITHUB" -eq 0 ]; then
             printf 'missing\n\n'
@@ -1013,8 +1028,9 @@ show_menu() {
     TUI_LEGEND="status"
 
     # Vertical fit: the redraw moves the cursor up one line per rendered line,
-    # so if the block is taller than the screen the display corrupts. Fall
-    # back to installing everything instead of drawing a broken menu.
+    # so if the block is taller than the screen the display corrupts. Fall back
+    # to a plain numbered menu (no cursor movement, no tput) instead of
+    # skipping straight into installing everything.
     local rows est legend_extra=0
     rows=$(tput lines 2>/dev/null) || rows=""
     case "$rows" in ''|*[!0-9]*) rows="${LINES:-24}" ;; esac
@@ -1022,10 +1038,11 @@ show_menu() {
     est=$(( ${#items[@]} + 3 + ${#TUI_EXTRA_KEYS[@]} + legend_extra ))   # title + 2 help lines + legend + extra keys
     if [ "$est" -ge "$rows" ]; then
         warn "Menu needs $est rows, terminal has $rows"
-        info "Skipping the menu; all components will be installed. Use -y for a quiet run."
+        info "Falling back to a plain text menu"
         TUI_EXTRA_KEYS=(); TUI_EXTRA_DESCS=(); TUI_EXTRA_BUSY=(); TUI_EXTRA_FNS=()
         TUI_ITEM_COLOR=(); TUI_REFRESH_FN=""; TUI_LEGEND=""
-        return 0
+        show_text_menu "${items[@]}"
+        return $?
     fi
 
     local result
@@ -1041,6 +1058,127 @@ show_menu() {
     TUI_ITEM_COLOR=()
     TUI_REFRESH_FN=""
     TUI_LEGEND=""
+
+    apply_menu_result "$result"
+}
+
+# Plain numbered fallback menu for terminals too short for the interactive
+# TUI (needs no cursor movement, no tput — just echo + read). Takes the same
+# "tag|description|on|off" items, honors separators, and produces the same
+# space-separated tag result for apply_menu_result. Empty input confirms,
+# 'q' quits, 'a' toggles all, otherwise the typed numbers toggle.
+show_text_menu() {
+    local -a tags=() descs=() states=() nums=()
+    local e rest n=0 i
+    for e in "$@"; do
+        if [ "${e%%|*}" = "sep" ]; then
+            tags+=(""); descs+=("${e#*|}"); states+=("")
+        else
+            tags+=("${e%%|*}")
+            rest="${e#*|}"
+            descs+=("${rest%%|*}")
+            states+=("${rest##*|}")
+            n=$((n + 1))
+            nums+=("$n")
+        fi
+    done
+
+    echo
+    echo "tmx2tm.sh v$SCRIPT_VERSION - select components"
+    echo "green = installed, yellow = update+, red = source gone"
+    echo
+    n=0
+    for ((i = 0; i < ${#tags[@]}; i++)); do
+        if [ -z "${tags[$i]}" ]; then
+            echo "-- ${descs[$i]} --"
+            continue
+        fi
+        n=$((n + 1))
+        if [ "${states[$i]}" = on ]; then
+            printf '  %2d. [x] %s\n' "$n" "${descs[$i]}"
+        else
+            printf '  %2d. [ ] %s\n' "$n" "${descs[$i]}"
+        fi
+    done
+    echo
+    echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | <Enter> = confirm | q = quit"
+
+    local line t idx
+    while true; do
+        printf '> '
+        IFS= read -r line || { echo; info "Cancelled."; exit 130; }
+        case "$line" in
+            '') break ;;
+            q|Q) info "Cancelled."; exit 130 ;;
+            a|A)
+                local all_on=1
+                for ((i = 0; i < ${#tags[@]}; i++)); do
+                    [ -n "${tags[$i]}" ] || continue
+                    [ "${states[$i]}" = on ] || all_on=0
+                done
+                for ((i = 0; i < ${#tags[@]}; i++)); do
+                    [ -n "${tags[$i]}" ] || continue
+                    if [ "$all_on" -eq 1 ]; then states[i]="off"; else states[i]="on"; fi
+                done
+                ;;
+            s|S) menu_save_kilo ;;
+            u|U) menu_update_tools_no_tui ;;
+            *)
+                for t in $line; do
+                    case "$t" in
+                        ''|*[!0-9]*) warn "Ignoring '$t' (not a number)"; continue ;;
+                    esac
+                    idx=-1; n=0
+                    for ((i = 0; i < ${#tags[@]}; i++)); do
+                        [ -n "${tags[$i]}" ] || continue
+                        n=$((n + 1))
+                        if [ "$n" -eq "$t" ]; then idx=$i; break; fi
+                    done
+                    if [ "$idx" -lt 0 ]; then warn "Ignoring '$t' (out of range)"; continue; fi
+                    if [ "${states[$idx]}" = on ]; then states[idx]="off"; else states[idx]="on"; fi
+                done
+                ;;
+        esac
+        # Re-print the list with the new toggles.
+        n=0
+        for ((i = 0; i < ${#tags[@]}; i++)); do
+            if [ -z "${tags[$i]}" ]; then
+                echo "-- ${descs[$i]} --"
+                continue
+            fi
+            n=$((n + 1))
+            if [ "${states[$i]}" = on ]; then
+                printf '  %2d. [x] %s\n' "$n" "${descs[$i]}"
+            else
+                printf '  %2d. [ ] %s\n' "$n" "${descs[$i]}"
+            fi
+        done
+    done
+
+    local result=""
+    for ((i = 0; i < ${#tags[@]}; i++)); do
+        [ -n "${tags[$i]}" ] || continue
+        [ "${states[$i]}" = on ] && result+="${tags[$i]} "
+    done
+    apply_menu_result "${result% }"
+}
+
+# Update action variant for the text menu: same updates as the TUI 'u' key,
+# but without TUI locals (no TUI_ON_TAGS / redraw). Updates everything that
+# is installed, then returns to the text menu loop.
+menu_update_tools_no_tui() {
+    local TUI_ON_TAGS=""
+    local c
+    for c in "${ALL_COMPONENTS[@]}"; do TUI_ON_TAGS+="$c "; done
+    TUI_ON_TAGS="${TUI_ON_TAGS% }"
+    menu_update_tools
+}
+
+# Apply a confirmed menu result (space-separated tags): reset, apply toggles
+# and options, auto-enable dependencies, and validate the selection.
+# Shared by the interactive TUI and the text fallback menu.
+apply_menu_result() {
+    local result="$1"
 
     # Reset then apply component selections.
     for c in "${ALL_COMPONENTS[@]}"; do SELECTED[$c]=0; done
