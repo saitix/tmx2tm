@@ -1046,7 +1046,7 @@ show_menu() {
     TUI_EXTRA_STYLE=("" "")
     if prereqs_missing; then
         TUI_EXTRA_KEYS+=("p")
-        TUI_EXTRA_DESCS+=("install prerequisites (fresh Termux)")
+        TUI_EXTRA_DESCS+=("install prerequisites (recommended on fresh Termux)")
         TUI_EXTRA_BUSY+=("Installing prerequisites; this can take several minutes...")
         TUI_EXTRA_FNS+=("menu_install_prereqs")
         # The prerequisites shortcut is the important one on a fresh Termux:
@@ -1144,15 +1144,16 @@ show_text_menu() {
         fi
     done
     echo
-    # The prerequisites command stands out in bold white, but only when it is
-    # actually offered (base prerequisites missing, e.g. fresh Termux). The
-    # 'r' reload is always offered: zoom out / rotate, then reload the menu
-    # (the TUI is retried when the terminal is tall enough again).
+    # Recommended actions go last, each on its own full line so they stand
+    # out: 'p' installs the prerequisites (bold white, only when actually
+    # offered, i.e. base prerequisites missing on a fresh Termux), 'r'
+    # reloads after zoom-out/rotate (always offered in the fallback, where
+    # the TUI is retried when the terminal is tall enough again).
+    echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | <Enter> = confirm | q = quit"
     if prereqs_missing; then
-        printf '%s\n' "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | ${C_KEY}p = install prerequisites${C_RESET} | r = zoom out and reload | <Enter> = confirm | q = quit"
-    else
-        echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | r = zoom out and reload | <Enter> = confirm | q = quit"
+        printf '%s%s%s\n' "$C_KEY" "p = install prerequisites (recommended on fresh Termux)" "$C_RESET"
     fi
+    echo "r = zoom out and reload"
 
     local line t idx
     while true; do
