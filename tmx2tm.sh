@@ -628,10 +628,15 @@ ensure_bashrc_line() {
 # before the menu redraws.
 # TUI_LEGEND, when non-empty, adds one status-legend line under the help lines
 # (green = installed, yellow = update+, red = source gone).
+# TUI_EXTRA_STYLE is an optional parallel array for the extra-key description
+# lines: an ANSI style applied to the whole "key description" line instead of
+# the default (bold-white key + dim description). Used to make one shortcut
+# stand out (e.g. the prerequisites installer in bold white).
 TUI_EXTRA_KEYS=()
 TUI_EXTRA_DESCS=()
 TUI_EXTRA_BUSY=()
 TUI_EXTRA_FNS=()
+TUI_EXTRA_STYLE=()
 TUI_ITEM_COLOR=()
 TUI_REFRESH_FN=""
 TUI_LEGEND=""
@@ -738,10 +743,15 @@ tui_checklist() {
         if [ -n "${TUI_LEGEND:-}" ]; then
             _tui_line "$C_OK" 'green' "$C_DIM" ' = installed  ' "$C_YELLOW" 'yellow' "$C_DIM" ' = update+  ' "$C_ERR" 'red' "$C_DIM" ' = source gone'
         fi
-        local ei
-        for ((ei = 0; ei < extra; ei++)); do
-            _tui_line "$C_KEY" "${TUI_EXTRA_KEYS[$ei]}" "$C_DIM" " ${TUI_EXTRA_DESCS[$ei]}"
-        done
+            local ei estyle=""
+            for ((ei = 0; ei < extra; ei++)); do
+                [ "${#TUI_EXTRA_STYLE[@]}" -gt "$ei" ] && estyle="${TUI_EXTRA_STYLE[$ei]}"
+                if [ -n "$estyle" ]; then
+                    _tui_line "$estyle" "${TUI_EXTRA_KEYS[$ei]} ${TUI_EXTRA_DESCS[$ei]}"
+                else
+                    _tui_line "$C_KEY" "${TUI_EXTRA_KEYS[$ei]}" "$C_DIM" " ${TUI_EXTRA_DESCS[$ei]}"
+                fi
+            done
     }
 
     _tui_clear() { printf '\033[%dA\033[J' "$lines"; }
@@ -1027,11 +1037,15 @@ show_menu() {
     TUI_EXTRA_BUSY=("Saving Kilo settings and tokens, please wait..."
                     "Updating installed tools; this can take several minutes...")
     TUI_EXTRA_FNS=("menu_save_kilo" "menu_update_tools")
+    TUI_EXTRA_STYLE=("" "")
     if prereqs_missing; then
         TUI_EXTRA_KEYS+=("p")
         TUI_EXTRA_DESCS+=("install prerequisites (fresh Termux)")
         TUI_EXTRA_BUSY+=("Installing prerequisites; this can take several minutes...")
         TUI_EXTRA_FNS+=("menu_install_prereqs")
+        # The prerequisites shortcut is the important one on a fresh Termux:
+        # render the whole line in bold white so it stands out.
+        TUI_EXTRA_STYLE+=("$C_KEY")
     fi
     # Status colors for pkg rows (green = installed+latest, yellow =
     # installed+upgradable, default = missing); refreshed after 'u'.
@@ -1052,6 +1066,7 @@ show_menu() {
         warn "Menu needs $est rows, terminal has $rows"
         info "Falling back to a plain text menu"
         TUI_EXTRA_KEYS=(); TUI_EXTRA_DESCS=(); TUI_EXTRA_BUSY=(); TUI_EXTRA_FNS=()
+        TUI_EXTRA_STYLE=()
         TUI_ITEM_COLOR=(); TUI_REFRESH_FN=""; TUI_LEGEND=""
         show_text_menu "${items[@]}"
         return $?
@@ -1067,6 +1082,7 @@ show_menu() {
     TUI_EXTRA_DESCS=()
     TUI_EXTRA_BUSY=()
     TUI_EXTRA_FNS=()
+    TUI_EXTRA_STYLE=()
     TUI_ITEM_COLOR=()
     TUI_REFRESH_FN=""
     TUI_LEGEND=""
@@ -1113,7 +1129,13 @@ show_text_menu() {
         fi
     done
     echo
-    echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | p = install prerequisites | <Enter> = confirm | q = quit"
+    # The prerequisites command stands out in bold white, but only when it is
+    # actually offered (base prerequisites missing, e.g. fresh Termux).
+    if prereqs_missing; then
+        printf '%s\n' "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | ${C_KEY}p = install prerequisites${C_RESET} | <Enter> = confirm | q = quit"
+    else
+        echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | <Enter> = confirm | q = quit"
+    fi
 
     local line t idx
     while true; do
