@@ -941,6 +941,7 @@ refresh_menu_colors() {
     for _c in "${THIRD_PARTY_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"; ((i++)) || true; done
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # sep: pkg tools
     for _c in "${PKG_TOOL_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"; ((i++)) || true; done
+    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # sep: options
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # apt_upgrade option
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # no_storage option
     TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # kilocode_native option
@@ -994,6 +995,7 @@ show_menu() {
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
         items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
     done
+    items+=("sep|options")
     items+=("apt_upgrade|OPTION: apt update & upgrade before installing (recommended)|$([ "$APT_UPGRADE" -eq 1 ] && echo on || echo off)")
     items+=("no_storage|OPTION: skip termux-setup-storage (shared storage)|$([ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off)")
     items+=("kilocode_native|OPTION: kilocode - pick recommended native method (no prompt)|$([ "$KILOCODE_NATIVE" -eq 1 ] && echo on || echo off)")
