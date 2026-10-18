@@ -12,7 +12,7 @@
 # (Do NOT pipe curl into bash: the script reads stdin for its interactive
 # menu, so `curl ... | bash` would break the TUI.)
 #
-# Version: 0.8
+# Version: 0.9
 #
 # Installs (selectable via a built-in arrow-key TUI, or non-interactive with -y).
 # Components are grouped and sorted alphabetically, mirroring the menu order:
@@ -89,13 +89,14 @@ warn() { printf '    %s[!]%s %s\n' "$C_WARN" "$C_RESET" "$1"; }
 die()  { printf '\n%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
 
 # ---------------------------------------------------------------- config ----
-SCRIPT_VERSION="0.8"
+SCRIPT_VERSION="0.9"
 REPO_SHIZUKU="https://github.com/jecis-repos/termux-shizuku-tools.git"
 REPO_CORE_INSTALL="https://raw.githubusercontent.com/DevCoreXOfficial/core-termux/main/install.sh"
 REPO_RISH_INSTALL="https://raw.githubusercontent.com/merbah3266/rish_installer/main/rish_installer.sh"
 
 SHIZUKU_DIR="$HOME/termux-shizuku-tools"
 BASHRC="$HOME/.bashrc"
+BASH_PROFILE="$HOME/.bash_profile"
 
 # pkg dependencies shared by the complex tools (always installed).
 BASE_PKG_DEPS=(
@@ -845,6 +846,41 @@ setup_golang_path() {
     info "Added GOPATH and \$GOPATH/bin to ~/.bashrc"
 }
 
+# Starship prompt init. Only touches ~/.bash_profile when the installer itself
+# runs under bash ($BASH_VERSION is set only by bash; $0/$SHELL are unreliable
+# — $SHELL is the login shell, not the running one). Otherwise the snippet
+# would never execute and would just litter a foreign shell's file.
+# The snippet is guarded twice: the file marker prevents duplicate appends on
+# re-runs, and the `command -v starship` check inside the snippet means shells
+# stay usable if starship is later uninstalled.
+setup_starship_init() {
+    if [ -z "${BASH_VERSION:-}" ]; then
+        warn "Installer is not running under bash; skipping starship ~/.bash_profile init"
+        return 0
+    fi
+
+    if ! command -v starship >/dev/null 2>&1; then
+        warn "starship binary not found after install; skipping ~/.bash_profile init"
+        return 0
+    fi
+
+    local marker='# Initialize Starship only if installed'
+    if [ -f "$BASH_PROFILE" ] && grep -qxF "$marker" "$BASH_PROFILE" 2>/dev/null; then
+        info "Starship init already present in ~/.bash_profile"
+        return 0
+    fi
+
+    {
+        printf '\n%s\n' "$marker"
+        printf '%s\n' 'if command -v starship >/dev/null 2>&1; then'
+        # shellcheck disable=SC2016  # literal snippet for ~/.bash_profile, must not expand
+        printf '%s\n' '    eval "$(starship init bash)"'
+        printf '%s\n' 'fi'
+    } >>"$BASH_PROFILE"
+    info "Added starship init to ~/.bash_profile"
+    ok "starship -> $(command -v starship)"
+}
+
 install_pkg_tools() {
     local pkgs=()
     local c p bin
@@ -867,6 +903,10 @@ install_pkg_tools() {
 
     if is_selected golang; then
         setup_golang_path
+    fi
+
+    if is_selected starship; then
+        setup_starship_init
     fi
 }
 

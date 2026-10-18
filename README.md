@@ -105,6 +105,17 @@ export GOPATH="$HOME/go"
 export PATH="$GOPATH/bin:$PATH"
 ```
 
+When `starship` is selected, the installer appends its init snippet to
+`~/.bash_profile` — but only if the installer itself runs under bash, and
+only if the snippet (or the `starship` binary check) is not already there:
+
+```bash
+# Initialize Starship only if installed
+if command -v starship >/dev/null 2>&1; then
+    eval "$(starship init bash)"
+fi
+```
+
 ### Options (listed last, after the pkg tools)
 
 | Toggle          | Effect                                                              |
@@ -300,9 +311,9 @@ sshd                      # start the server
 ssh -p 8022 <user>@<device-ip>   # connect from another machine
 pkill sshd                # stop the server
 ```
-**Version: 0.8.** The version is defined once as `$SCRIPT_VERSION` in the
+**Version: 0.9.** The version is defined once as `$SCRIPT_VERSION` in the
 config block, echoed by `-V`/`--version`, shown in the menu title and the
-final summary, and mirrored in the script file header (`Version: 0.8`).
+final summary, and mirrored in the script file header (`Version: 0.9`).
 Bump all of them together if/when changing the script.
 
 ## Notes / limitations
