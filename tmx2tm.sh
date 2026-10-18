@@ -1478,12 +1478,14 @@ setup_starship_init() {
 }
 
 # Neofetch auto-run snippet, kept in sync in ~/.bash_profile AND ~/.bashrc on
-# every run (same pattern as setup_starship_init): binary present -> snippet
-# ensured in both files; binary missing (user uninstalled) -> snippet removed
-# from both so shells stay clean. Also repairs the legacy variant found in the
-# wild, which lacks the closing `fi` (dangling if-block swallowing the rest
-# of the file): any block from the start marker to the end marker is replaced
-# by the canonical closed form.
+# Neofetch auto-run snippet, kept in sync in ~/.bash_profile ONLY (not
+# ~/.bashrc: zellij sources .bashrc for every pane/tab, so a .bashrc copy
+# would re-run neofetch on each new tab; .bash_profile runs once per login
+# shell, which is exactly the desired frequency — no guard variable needed).
+# Same pattern as setup_starship_init otherwise: binary present -> snippet
+# ensured; binary missing -> snippet removed (from .bash_profile AND any
+# stale copy in .bashrc). Also repairs the legacy variant found in the wild,
+# which lacks the closing `fi`.
 setup_neofetch_init() {
     if [ -z "${BASH_VERSION:-}" ]; then
         warn "Installer is not running under bash; skipping neofetch shell init sync"
@@ -1514,32 +1516,30 @@ setup_neofetch_init() {
         return 0
     fi
 
-    for f in "$BASH_PROFILE" "$BASHRC"; do
-        if grep -qxF "$start_marker" "$f" 2>/dev/null \
-           && grep -qxF 'fi' "$f" 2>/dev/null; then
-            # Block present; verify it is the closed form (fi between markers).
-            if awk -v s="$start_marker" -v e="$end_marker" \
-                '$0==s{inb=1; hasfi=0; next} inb&&$0=="fi"{hasfi=1} $0==e{if(hasfi)ok=1; inb=0} END{exit !ok}' \
-                "$f" 2>/dev/null; then
-                info "Neofetch init already present in $f"
-                continue
-            fi
-        fi
+    # Drop any stale copy in .bashrc: profile-only from now on.
+    if _strip_neofetch_block "$BASHRC" 2>/dev/null; then
+        info "Removed stale neofetch init from $BASHRC (profile-only now)"
+    fi
+
+    f="$BASH_PROFILE"
+    if awk -v s="$start_marker" -v e="$end_marker" \
+        '$0==s{inb=1; hasfi=0; next} inb&&$0=="fi"{hasfi=1} $0==e{if(hasfi)ok=1; inb=0} END{exit !ok}' \
+        "$f" 2>/dev/null; then
+        info "Neofetch init already present in $f"
+    else
         _strip_neofetch_block "$f" 2>/dev/null || true
         [ -e "$f" ] || : >"$f"
         {
             printf '\n%s\n' "$start_marker"
             # shellcheck disable=SC2016  # literal snippet for the rc files, must not expand
-            printf '%s\n' 'if [[ $- == *i* && -z "$NEOFETCH_SHOWN" ]] && command -v neofetch >/dev/null 2>&1; then'
+            printf '%s\n' 'if [[ $- == *i* ]] && command -v neofetch >/dev/null 2>&1; then'
             # shellcheck disable=SC2016
             printf '%s\n' '  neofetch --off'
-            # shellcheck disable=SC2016
-            printf '%s\n' '  export NEOFETCH_SHOWN=1'
             printf '%s\n' 'fi'
             printf '%s\n' "$end_marker"
         } >>"$f"
         info "Added neofetch init to $f"
-    done
+    fi
     ok "neofetch -> $(command -v neofetch)"
 }
 
@@ -1611,7 +1611,8 @@ install_pkg_tools() {
     # ensures the snippet in both rc files when installed, and removes it
     # from both when the user uninstalled starship.
     setup_starship_init
-    # Neofetch snippet sync: same unconditional rule as starship.
+    # Neofetch snippet sync: same unconditional rule as starship, but
+    # profile-only (zellij re-sources .bashrc per pane/tab).
     setup_neofetch_init
 }
 

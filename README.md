@@ -126,24 +126,23 @@ shells stay clean. The sync only runs when the installer itself runs under
 bash.
 
 When `neofetch` is installed, the installer keeps its auto-run snippet in
-sync in **both** `~/.bash_profile` and `~/.bashrc` on every run (same
-unconditional rule as starship). The snippet runs `neofetch --off` once per
-shell tree (`NEOFETCH_SHOWN` guard) in interactive shells:
+sync in `~/.bash_profile` ONLY — not `~/.bashrc`, since zellij sources
+`.bashrc` for every pane/tab and would re-run neofetch each time, while
+`.bash_profile` runs once per login shell. No guard variable is needed. The
+snippet runs `neofetch --off` in interactive shells:
 
 ```bash
 # >>> neofetch on Termux start >>>
-if [[ $- == *i* && -z "$NEOFETCH_SHOWN" ]] && command -v neofetch >/dev/null 2>&1; then
+if [[ $- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
   neofetch --off
-  export NEOFETCH_SHOWN=1
 fi
 # <<< neofetch on Termux start <<<
 ```
 
 If neofetch is not installed (e.g. the user uninstalled it and did not select
-it), the snippet is removed from both files. The sync also repairs the legacy
-variant found in the wild, which lacks the closing `fi` — any block between
-the start/end markers is replaced by the canonical closed form above. Only
-runs when the installer itself runs under bash.
+it), the snippet is removed from `.bash_profile` (plus any stale copy in
+`.bashrc`). The sync also repairs the legacy variant found in the wild, which
+lacks the closing `fi`. Only runs when the installer itself runs under bash.
 
 ### Options (listed last, after the pkg tools)
 
