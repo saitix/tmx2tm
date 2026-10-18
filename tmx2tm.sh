@@ -1784,8 +1784,8 @@ cleanup_stubs() {
     local -a _cl=()
     local _p _pipdir
     for _p in "$HOME/.cache/pip" "$HOME/.cache/uv" "$HOME/.npm" \
-              "$HOME/.cache/go-build" "$HOME/.cargo/registry/cache" \
-              "$HOME/.rustup/tmp" "${CARGO_HOME:-}/registry/cache" \
+              "$HOME/.cache/go-build" "$HOME/.cargo/registry" \
+              "$HOME/.rustup/tmp" "${CARGO_HOME:-}/registry" \
               /var/cache/apt/archives "$PREFIX/var/cache/apt/archives"; do
         [ -n "$_p" ] && [ -e "$_p" ] && _cl+=("$_p")
     done
@@ -1842,8 +1842,10 @@ cleanup_stubs() {
     fi
 
     # Compiler caches from source-built extensions (jiter/pydantic-core via shizuku).
-    rm -rf "$HOME/.cache/pip" "$HOME/.cargo/registry/cache" "$HOME/.rustup/tmp" 2>/dev/null || true
-    [ -n "${CARGO_HOME:-}" ] && rm -rf "$CARGO_HOME/registry/cache" 2>/dev/null || true
+    # ~/.cargo/registry (cache + src + index) is fully re-downloadable: cargo
+    # re-fetches it on the next build, so wiping it only costs a re-download.
+    rm -rf "$HOME/.cache/pip" "$HOME/.cargo/registry" "$HOME/.rustup/tmp" 2>/dev/null || true
+    [ -n "${CARGO_HOME:-}" ] && rm -rf "$CARGO_HOME/registry" 2>/dev/null || true
     command -v cargo >/dev/null 2>&1 && cargo cache -a >/dev/null 2>&1 || true
     command -v go >/dev/null 2>&1 && go clean -cache -modcache -testcache >/dev/null 2>&1 \
         || rm -rf "$HOME/.cache/go-build" 2>/dev/null || true
