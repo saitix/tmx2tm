@@ -172,11 +172,18 @@ Upstream sources used by the git/core/rish stages:
 | a           | toggle every item                                   |
 | s           | save a kilocode backup (see below), stay in the menu |
 | u           | update what is already installed (see below)        |
+| p           | install prerequisites, then reload the menu (fresh Termux) |
 | Enter       | confirm selection                                   |
 | q           | quit / cancel                                       |
 
 In the TUI the shortcut keys are rendered in bold white (Up, Down, Space, a,
-s, u, Enter, q) next to their dim descriptions so they stand out.
+s, u, p, Enter, q) next to their dim descriptions so they stand out.
+
+The `p` key appears only when base prerequisites are missing (fresh Termux:
+the status probes run degraded without `git`/`pip`/`tput`). It installs the
+prerequisites (`apt update & upgrade` plus the base pkg dependencies) and
+reloads the menu with full status colors and checks. The text fallback menu
+offers the same `p` command.
 
 Pkg-tool rows are colored by install state: **green** = installed and at the
 latest version, **yellow** = installed but an update is available (suffixed
@@ -351,9 +358,9 @@ Bump all of them together if/when changing the script.
 - The TUI truncates lines to the terminal width, so it renders correctly on
   very narrow screens (e.g. a folded phone). If the terminal is too short
   to fit the whole checklist, a plain numbered text menu is shown instead
-  (same items and defaults; type numbers to toggle, `a` for all, `s`/`u`
-  for backup/update, Enter to confirm, `q` to quit). The menu always comes
-  first — nothing is installed before you confirm a selection.
+  (same items and defaults; type numbers to toggle, `a` for all, `s`/`u`/`p`
+  for backup/update/prerequisites, Enter to confirm, `q` to quit). The menu
+  always comes first — nothing is installed before you confirm a selection.
 - On a fresh Termux without `git`/`pip` yet, the status probes degrade to
   presence-only verdicts (installed = green, missing = dim, never red);
   full version/source checks activate once the base dependencies are in.

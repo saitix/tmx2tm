@@ -37,6 +37,14 @@ Minimal instructions for agents working in this repo.
    assumptions intact.
 7. **Commit style:** short imperative subject line (< 72 chars), blank line,
    then a body explaining what and why.
+9. **Color rule.** Every displayed action or status that shows something in
+   progress is PURPLE: stage headers via `step()` (purple `==>`), wait
+   notices via `announce()`, in-progress sub-statuses via `progress()`
+   (purple, info-indented). Static notices stay dim (`info`), results stay
+   green (`ok`/`done_step`), warnings yellow/pink (`warn`), errors red
+   (`die`/red menu rows). The one exception: `done_step()` (green `==>`)
+   for the final "Installation complete" header, which is a result, not
+   progress. Never add a new blue/progress-colored helper — reuse these.
 8. **Unified status model.** Both component groups share one state machine —
    `current` (green, `[installed]`), `outdated` (yellow, `[update+]`),
    `missing` (dim, no suffix), `broken` (red, `[reason]`, 3rd-party only).

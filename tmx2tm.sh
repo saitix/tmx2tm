@@ -81,12 +81,17 @@ C_ERR=$'\e[1;31m'
 C_PURPLE=$'\e[38;5;135m'   # "working / please wait" notices
 C_YELLOW=$'\e[38;5;220m'   # pkg tool installed but upgradable (menu status)
 
-step() { printf '\n%s==>%s %s%s%s\n' "$C_BLUE" "$C_RESET" "$C_HL" "$1" "$C_RESET"; }
+step() { printf '\n%s==>%s %s%s%s\n' "$C_PURPLE" "$C_RESET" "$C_HL" "$1" "$C_RESET"; }
 announce() { printf '\n%s%s%s\n' "$C_PURPLE" "$1" "$C_RESET"; }
 info() { printf '    %s%s%s\n' "$C_DIM" "$1" "$C_RESET"; }
+# In-progress sub-status (indented like info, but purple per the color rule:
+# every displayed action or status that shows something in progress is purple;
+# static notices stay dim, results stay green/yellow/red).
+progress() { printf '    %s%s%s\n' "$C_PURPLE" "$1" "$C_RESET"; }
 ok()   { printf '    %s[ok]%s %s\n' "$C_OK" "$C_RESET" "$1"; }
 warn() { printf '    %s[!]%s %s\n' "$C_WARN" "$C_RESET" "$1"; }
 die()  { printf '\n%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
+done_step() { printf '\n%s==>%s %s%s%s\n' "$C_OK" "$C_RESET" "$C_OK" "$1" "$C_RESET"; }
 
 # ---------------------------------------------------------------- config ----
 SCRIPT_VERSION="0.9"
@@ -1005,7 +1010,7 @@ show_menu() {
         items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
     done
     items+=("sep|pkg tools")
-    info "Checking installed pkg tools..."
+    progress "Checking installed pkg tools..."
     probe_pkg_status
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
         items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
@@ -1015,12 +1020,19 @@ show_menu() {
     items+=("no_storage|OPTION: skip termux-setup-storage (shared storage)|$([ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off)")
     items+=("kilocode_native|OPTION: kilocode - pick recommended native method (no prompt)|$([ "$KILOCODE_NATIVE" -eq 1 ] && echo on || echo off)")
 
-    # Shortcut keys: 's' saves a Kilo backup, 'u' updates what is installed.
+    # Shortcut keys: 's' saves a Kilo backup, 'u' updates what is installed,
+    # 'p' installs prerequisites on demand (fresh Termux) and reloads the menu.
     TUI_EXTRA_KEYS=("s" "u")
     TUI_EXTRA_DESCS=("save kilocode backup" "update installed tools")
     TUI_EXTRA_BUSY=("Saving Kilo settings and tokens, please wait..."
                     "Updating installed tools; this can take several minutes...")
     TUI_EXTRA_FNS=("menu_save_kilo" "menu_update_tools")
+    if prereqs_missing; then
+        TUI_EXTRA_KEYS+=("p")
+        TUI_EXTRA_DESCS+=("install prerequisites (fresh Termux)")
+        TUI_EXTRA_BUSY+=("Installing prerequisites; this can take several minutes...")
+        TUI_EXTRA_FNS+=("menu_install_prereqs")
+    fi
     # Status colors for pkg rows (green = installed+latest, yellow =
     # installed+upgradable, default = missing); refreshed after 'u'.
     refresh_menu_colors
@@ -1101,7 +1113,7 @@ show_text_menu() {
         fi
     done
     echo
-    echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | <Enter> = confirm | q = quit"
+    echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | p = install prerequisites | <Enter> = confirm | q = quit"
 
     local line t idx
     while true; do
@@ -1123,6 +1135,17 @@ show_text_menu() {
                 ;;
             s|S) menu_save_kilo ;;
             u|U) menu_update_tools_no_tui ;;
+            p|P)
+                menu_install_prereqs
+                # Reload with full bells and whistles: prerequisites are in,
+                # so re-run the whole menu (fresh probes, colors, TUI if it
+                # fits now that tput/ncurses-utils exists). The outer
+                # show_menu call returns through here; exec replaces this
+                # shell so no stale state survives.
+                progress "Prerequisites installed — reloading the menu..."
+                # shellcheck disable=SC2086  # intentional word-splitting of extra passthrough args
+                exec bash "$0" ${TMX2TM_MENU_ARGS:-} --menu
+                ;;
             *)
                 for t in $line; do
                     case "$t" in
@@ -1232,12 +1255,12 @@ ensure_termux_mirror() {
 
     warn "No Termux repository mirror is selected yet"
     if [ -t 0 ] && [ -t 1 ] && command -v termux-change-repo >/dev/null 2>&1; then
-        info "Running termux-change-repo (pick a mirror group)"
+        progress "Running termux-change-repo (pick a mirror group)"
         termux-change-repo || warn "termux-change-repo did not complete; continuing"
     fi
 
     if [ ! -e "$chosen" ] && [ -e "$PREFIX/etc/termux/mirrors/default" ]; then
-        info "Falling back to the bundled default mirror"
+        progress "Falling back to the bundled default mirror"
         ln -sfn "$PREFIX/etc/termux/mirrors/default" "$chosen" \
             || warn "Could not select the default mirror automatically"
     fi
@@ -1262,9 +1285,32 @@ update_apt() {
 
 install_base_deps() {
     step "Installing base pkg dependencies"
-    info "pkg install: ${BASE_PKG_DEPS[*]}"
+    progress "pkg install: ${BASE_PKG_DEPS[*]}"
     pkg install -y "${BASE_PKG_DEPS[@]}" || die "Failed to install base pkg dependencies"
     ok "Base dependencies installed"
+}
+
+# True when the base prerequisites are incomplete (fresh Termux): at least one
+# BASE_PKG_DEPS package is not installed. Fast local dpkg checks only, no
+# network. Used to offer the 'p' (install prerequisites) shortcut in the menus.
+prereqs_missing() {
+    local p
+    for p in "${BASE_PKG_DEPS[@]}"; do
+        dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "ok installed" || return 0
+    done
+    return 1
+}
+
+# Action for the 'p' shortcut: install prerequisites on demand (apt update &
+# upgrade plus the base pkg dependencies), e.g. on a fresh Termux where the
+# status probes run degraded without git/pip/tput. Idempotent — a rerun is a
+# quick no-op. Forces APT_UPGRADE locally so 'p' works even when the
+# apt_upgrade option is toggled off. After it finishes, the menu refresh hook
+# re-probes, so the menu reloads with full status colors and checks.
+menu_install_prereqs() {
+    local APT_UPGRADE=1
+    update_apt
+    install_base_deps
 }
 
 # Go keeps user-built binaries in $GOPATH/bin (default ~/go/bin) and the locale
@@ -1357,13 +1403,13 @@ install_pkg_tools() {
     fi
     if [ "${#pkgs[@]}" -gt 0 ]; then
         step "Installing pkg tools"
-        info "pkg install: ${pkgs[*]}"
+        progress "pkg install: ${pkgs[*]}"
         pkg install -y "${pkgs[@]}" || die "Failed to install pkg tools"
         ok "pkg tools installed"
     fi
     if [ "${#reinstall_pkgs[@]}" -gt 0 ]; then
         step "Reinstalling explicitly selected pkg tools"
-        info "pkg reinstall: ${reinstall_pkgs[*]}"
+        progress "pkg reinstall: ${reinstall_pkgs[*]}"
         pkg reinstall -y "${reinstall_pkgs[@]}" || die "Failed to reinstall pkg tools"
         ok "pkg tools reinstalled"
     fi
@@ -1431,7 +1477,7 @@ install_pip_tools() {
 install_copyparty_storage() {
     is_selected copyparty || return 0
     if [ "$SETUP_STORAGE" -eq 1 ] && [ ! -d "$HOME/storage" ]; then
-        info "Requesting shared-storage access (termux-setup-storage)"
+        progress "Requesting shared-storage access (termux-setup-storage)"
         termux-setup-storage >/dev/null 2>&1 \
             || warn "termux-setup-storage skipped or denied; run it manually later"
     fi
@@ -1446,16 +1492,16 @@ install_shizuku_tools() {
     step "Installing termux-shizuku-tools"
 
     if [ -d "$SHIZUKU_DIR/.git" ]; then
-        info "Existing checkout found; updating"
+        progress "Existing checkout found; updating"
         git -C "$SHIZUKU_DIR" pull --ff-only || warn "git pull failed; using existing checkout"
     else
-        info "Cloning $REPO_SHIZUKU"
+        progress "Cloning $REPO_SHIZUKU"
         git clone --depth=1 "$REPO_SHIZUKU" "$SHIZUKU_DIR" \
             || die "Failed to clone termux-shizuku-tools"
     fi
 
     chmod +x "$SHIZUKU_DIR/setup.sh"
-    info "Running setup.sh (installs rish, symlinks, AI-tool helpers)"
+    progress "Running setup.sh (installs rish, symlinks, AI-tool helpers)"
 
     # setup.sh runs `pip install anthropic google-genai requests`. Neither jiter
     # nor pydantic-core ships an Android wheel, so pip compiles them from source
@@ -1493,7 +1539,7 @@ install_rish() {
     local -a flags=()
     # TP_FORCE=1 after an explicit menu tick on a green tool.
     if [ "$TP_FORCE" -eq 1 ] || [ -e "$PREFIX/bin/rish" ] || [ -e "$HOME/rish" ]; then
-        info "Passing --reinstall to the rish installer"
+        progress "Passing --reinstall to the rish installer"
         flags+=(--reinstall)
     fi
 
@@ -1507,7 +1553,7 @@ install_rish() {
     # Interactive menu picks the APK source; silent mode uses the recommended
     # default (extract from the installed Shizuku app, else latest GitHub release).
     if [ ! -t 0 ]; then
-        info "Running rish installer silently (source: default)"
+        progress "Running rish installer silently (source: default)"
         flags+=(--silent --source default)
     else
         info "Follow the rish installer menu to choose a source (offline is recommended)"
@@ -1543,7 +1589,7 @@ install_core() {
     fi
 
     command -v curl >/dev/null 2>&1 || die "curl is required to install core-termux"
-    info "Running official core-termux installer"
+    progress "Running official core-termux installer"
     if ! curl -fsSL "$REPO_CORE_INSTALL" | bash; then
         die "core-termux installer failed"
     fi
@@ -1573,7 +1619,7 @@ install_kilocode() {
     # core's installer shows an interactive menu (native / native+proot / proot-distro).
     # Option 0 ("glibc (recommended)") is the default; an empty keypress (Enter) selects it.
     if [ "$KILOCODE_NATIVE" -eq 1 ] || [ ! -t 0 ]; then
-        info "Selecting recommended 'glibc (recommended)' method non-interactively"
+        progress "Selecting recommended 'glibc (recommended)' method non-interactively"
         if ! printf '\n' | TERM="${TERM:-xterm-256color}" core install ai --kilocode-cli; then
             die "core install ai --kilocode-cli failed"
         fi
@@ -1590,7 +1636,7 @@ install_kilocode() {
 }
 
 print_summary() {
-    step "Installation complete (tmx2tm.sh v$SCRIPT_VERSION)"
+    done_step "Installation complete (tmx2tm.sh v$SCRIPT_VERSION)"
     echo
     printf '  %sInstalled tools%s\n' "$C_BLUE" "$C_RESET"
     local c
