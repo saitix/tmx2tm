@@ -1891,6 +1891,5 @@ main() {
 main
 
 # =============================================================================
-# README has moved to ./README.md (single source of truth).
 # See README.md for full documentation (usage, components, stages, workflows).
 # =============================================================================
