@@ -1,4 +1,4 @@
-# install-termux-tools.sh
+# tmx2tm.sh
 
 Fresh-install installer for a new Termux instance.
 
@@ -20,10 +20,28 @@ elsewhere, reproduce the stages below (sources are listed with each tool).
 
 ## Quick start
 
+Run it straight from git (no clone needed). The script is downloaded to a
+temp file first and then run with your own shell, so flags work and the
+interactive menu keeps a usable stdin (do NOT pipe `curl` into `bash` —
+the menu reads stdin and would break):
+
 ```bash
-chmod +x xpl-install-termux-tools.sh
-bash xpl-install-termux-tools.sh              # interactive menu (arrow keys)
-bash xpl-install-termux-tools.sh -y           # unattended: install everything
+curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o /tmp/tmx2tm.sh && bash /tmp/tmx2tm.sh
+```
+
+Unattended (install everything, no menu):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o /tmp/tmx2tm.sh && bash /tmp/tmx2tm.sh -y
+```
+
+Or clone and run locally:
+
+```bash
+git clone https://github.com/saitix/tmx2tm.git
+cd tmx2tm
+bash tmx2tm.sh              # interactive menu (arrow keys)
+bash tmx2tm.sh -y           # unattended: install everything
 ```
 
 ## What it installs
@@ -227,19 +245,19 @@ given, the backup runs and the restore is skipped.
 One-time on the current device, to capture your Kilo login:
 
 ```bash
-bash xpl-install-termux-tools.sh --save-kilo=/sdcard/kilo-backup.tar.gz
+bash tmx2tm.sh --save-kilo=/sdcard/kilo-backup.tar.gz
 ```
 
 On the new device (restore, then install everything in one go):
 
 ```bash
-bash xpl-install-termux-tools.sh --restore-kilo=/sdcard/kilo-backup.tar.gz -y
+bash tmx2tm.sh --restore-kilo=/sdcard/kilo-backup.tar.gz -y
 ```
 
 Full unattended install of every tool:
 
 ```bash
-bash xpl-install-termux-tools.sh -y
+bash tmx2tm.sh -y
 ```
 
 ## After install

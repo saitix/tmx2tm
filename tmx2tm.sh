@@ -1,7 +1,16 @@
 #!/data/data/com.termux/files/usr/bin/bash
 #
-# install-termux-tools.sh
+# tmx2tm.sh
 # Fresh-install installer for a new Termux instance.
+#
+# Run directly from git (downloads the script to a temp file, then runs it
+# with your own shell, so all flags work and stdin stays usable):
+#
+#   curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o /tmp/tmx2tm.sh && bash /tmp/tmx2tm.sh
+#   curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o /tmp/tmx2tm.sh && bash /tmp/tmx2tm.sh -y
+#
+# (Do NOT pipe curl into bash: the script reads stdin for its interactive
+# menu, so `curl ... | bash` would break the TUI.)
 #
 # Version: 0.6
 #
@@ -40,16 +49,16 @@
 # In the menu, 's' saves a Kilo backup and 'u' updates installed tools in place.
 #
 # Usage:
-#   bash install-termux-tools.sh                 # interactive arrow-key menu
-#   bash install-termux-tools.sh -y              # non-interactive: install everything
-#   bash install-termux-tools.sh --no-storage    # skip termux-setup-storage prompt
-#   bash install-termux-tools.sh --no-apt-upgrade    # skip the apt update/upgrade + repo check
-#   bash install-termux-tools.sh --kilocode-native   # kilocode: auto-pick recommended glibc method
-#   bash install-termux-tools.sh --menu          # force the menu even next to other flags
-#   bash install-termux-tools.sh --save-kilo[=PATH]      # back up current Kilo settings + tokens (default ~/.kilo-backup.tar.gz)
-#   bash install-termux-tools.sh --restore-kilo[=PATH]   # restore Kilo settings, then install
-#   bash install-termux-tools.sh -V              # print the version
-#   bash install-termux-tools.sh --help
+#   bash tmx2tm.sh                 # interactive arrow-key menu
+#   bash tmx2tm.sh -y              # non-interactive: install everything
+#   bash tmx2tm.sh --no-storage    # skip termux-setup-storage prompt
+#   bash tmx2tm.sh --no-apt-upgrade    # skip the apt update/upgrade + repo check
+#   bash tmx2tm.sh --kilocode-native   # kilocode: auto-pick recommended glibc method
+#   bash tmx2tm.sh --menu          # force the menu even next to other flags
+#   bash tmx2tm.sh --save-kilo[=PATH]      # back up current Kilo settings + tokens (default ~/.kilo-backup.tar.gz)
+#   bash tmx2tm.sh --restore-kilo[=PATH]   # restore Kilo settings, then install
+#   bash tmx2tm.sh -V              # print the version
+#   bash tmx2tm.sh --help
 #
 # Kilo/kilocode settings (~/.config/kilo/kilo.jsonc), login tokens
 # (~/.local/share/kilo/auth.json) and model choice (~/.local/state/kilo/model.json)
@@ -214,7 +223,7 @@ for arg in "$@"; do
             exit 0
             ;;
         -V|--version)
-            printf 'install-termux-tools.sh v%s\n' "$SCRIPT_VERSION"
+            printf 'tmx2tm.sh v%s\n' "$SCRIPT_VERSION"
             exit 0
             ;;
         *) die "Unknown option: $arg" ;;
@@ -592,7 +601,7 @@ show_menu() {
     fi
 
     local result
-    if ! tui_checklist "install-termux-tools.sh v$SCRIPT_VERSION - select components" result "${items[@]}"; then
+    if ! tui_checklist "tmx2tm.sh v$SCRIPT_VERSION - select components" result "${items[@]}"; then
         echo
         info "Cancelled."
         exit 130
@@ -909,7 +918,7 @@ install_kilocode() {
 }
 
 print_summary() {
-    step "Installation complete (install-termux-tools.sh v$SCRIPT_VERSION)"
+    step "Installation complete (tmx2tm.sh v$SCRIPT_VERSION)"
     echo
     printf '  %sInstalled tools%s\n' "$C_BLUE" "$C_RESET"
     local c

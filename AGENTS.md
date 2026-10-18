@@ -4,7 +4,7 @@ Minimal instructions for agents working in this repo.
 
 ## Repo layout
 
-- `xpl-install-termux-tools.sh` — the installer (single bash file, `#!/data/data/com.termux/files/usr/bin/bash`).
+- `tmx2tm.sh` — the installer (single bash file, `#!/data/data/com.termux/files/usr/bin/bash`).
 - `README.md` — full user documentation. **Single source of truth for docs.**
 
 ## Rules
@@ -28,8 +28,8 @@ Minimal instructions for agents working in this repo.
    - `COMP_DESC[<tag>]` menu description
    - `COMP_HINT[<tag>]` summary-hint (what to run after install)
    - `README.md` pkg-tools table row + any stage-specific section
-4. **Verify before committing:** run `bash -n xpl-install-termux-tools.sh`
-   (syntax) and `shellcheck xpl-install-termux-tools.sh` (lint; must be clean).
+4. **Verify before committing:** run `bash -n tmx2tm.sh`
+   (syntax) and `shellcheck tmx2tm.sh` (lint; must be clean).
 5. **`.bashrc` rule.** Never append blindly — always use the existing
    `ensure_bashrc_line` helper so re-runs stay idempotent.
 6. **Target:** Termux on Android (aarch64) only. No `dialog`/`gum`
