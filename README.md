@@ -2,7 +2,7 @@
 
 Termux 2 take many. A bundler for packages and 3rd party apps on a termux instalation / or a Fresh-install installer for a new Termux instance
 
-![tmx2tm.sh interactive component selection menu](https://github.com/user-attachments/assets/2c158c42-37ec-4508-bce1-558ffc23a813)
+![tmx2tm.sh v0.9 component menu](https://github.com/user-attachments/assets/fa3f3936-0690-47b5-b54f-cd259f3e4952)
 
 ## Overview
 
@@ -15,11 +15,6 @@ This script was assembled by inspecting an existing, working Termux setup and
 copying the exact install steps each tool uses on this device. To recreate it
 elsewhere, reproduce the stages below (sources are listed with each tool).
 
-## Screenshot
-
-The component menu shows installed tools, selectable components, and options:
-
-![tmx2tm.sh v0.9 component menu](https://github.com/user-attachments/assets/fa3f3936-0690-47b5-b54f-cd259f3e4952)
 
 ## Quick start
 
