@@ -96,22 +96,38 @@ warn() { printf '    %s[!]%s %s\n' "$C_WARN" "$C_RESET" "$1"; }
 die()  { printf '\n%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
 done_step() { printf '\n%s==>%s %s%s%s\n' "$C_OK" "$C_RESET" "$C_OK" "$1" "$C_RESET"; }
 
-# Temp registry + exit trap (task 6): every mktemp path registers here so
-# Ctrl-C / errors never leave temp dirs behind or a hidden cursor. Cleanup
-# runs only in the main shell (BASHPID check) so background probe jobs that
-# inherit the trap do not wipe paths out from under each other.
+# Temp registry + exit trap: every mktemp path registers here so errors never
+# leave temp dirs behind or a hidden cursor. cleanup_temps runs on EXIT only;
+# INT/TERM handlers below exit with the conventional codes so Ctrl-C actually
+# stops the script (a trap on INT that does not exit would let the script
+# carry on). Cleanup runs only in the main shell (BASHPID check) so
+# background probe jobs that inherit the trap do not wipe paths out from
+# under each other.
 declare -a TEMP_PATHS=()
 MAIN_PID=$$
 register_temp() { TEMP_PATHS+=("$1"); }
 # shellcheck disable=SC2329  # invoked via trap
 cleanup_temps() {
-    [ "$BASHPID" = "$MAIN_PID" ] || return 0
+    [ "${BASHPID:-$$}" = "$MAIN_PID" ] || return 0
     local p
     for p in "${TEMP_PATHS[@]}"; do [ -e "$p" ] && rm -rf "$p" 2>/dev/null; done
     tput cnorm 2>/dev/null || true
     printf '%s' "$C_RESET"
 }
-trap cleanup_temps EXIT INT TERM
+# shellcheck disable=SC2329  # invoked via trap
+on_int() {
+    [ "${BASHPID:-$$}" = "$MAIN_PID" ] || exit 130
+    printf '\n  %sCancelled.%s\n' "$C_DIM" "$C_RESET"
+    exit 130
+}
+# shellcheck disable=SC2329  # invoked via trap
+on_term() {
+    [ "${BASHPID:-$$}" = "$MAIN_PID" ] || exit 143
+    exit 143
+}
+trap cleanup_temps EXIT
+trap on_int INT
+trap on_term TERM
 
 # ---------------------------------------------------------------- config ----
 SCRIPT_VERSION="0.9"
@@ -670,8 +686,7 @@ tp_gate() {
     esac
 }
 
-# Append a line to ~/.bashrc only if it is not already present.
-# Backup + rewrite helpers for shell startup files (S1): rewriting must never
+# Backup + rewrite helpers for shell startup files: rewriting must never
 # corrupt the file or break symlinks. rc_backup snapshots once per run per
 # file to <file>.tmx2tm.bak; rc_rewrite filters via a temp file, validates
 # with bash -n, then writes back in place (cat >) so symlinks keep working.
@@ -693,6 +708,7 @@ rc_rewrite() {
     rc_backup "$f"
     local tmp
     tmp=$(mktemp) || { warn "mktemp failed; leaving $f untouched"; return 1; }
+    register_temp "$tmp"
     if "$@" <"$f" >"$tmp" 2>/dev/null; then
         if bash -n "$tmp" 2>/dev/null; then
             cat "$tmp" >"$f"
@@ -708,6 +724,7 @@ rc_rewrite() {
     fi
     rm -f "$tmp"
 }
+# Append a line to ~/.bashrc only if it is not already present.
 ensure_bashrc_line() {
     local line="$1"
     rc_backup "$BASHRC"
@@ -756,6 +773,11 @@ TUI_EXTRA_BUSY=()
 TUI_EXTRA_FNS=()
 TUI_EXTRA_STYLE=()
 TUI_EXTRA_STREAM=()
+# TUI_ITEM_BULK is an optional parallel array (one entry per item, separators
+# get an empty entry): 1 = the `a` bulk key may turn this row on. Component
+# rows use menu_default_state (green/broken = 0, missing/yellow = 1) so bulk
+# never force-reinstalls; option rows are always 1.
+TUI_ITEM_BULK=()
 TUI_ITEM_COLOR=()
 TUI_REFRESH_FN=""
 TUI_LEGEND=""
@@ -858,12 +880,13 @@ tui_checklist() {
             fi
         done
         _tui_line "$C_KEY" 'Up' "$C_DIM" '/' "$C_KEY" 'Down' "$C_DIM" ' move  ' "$C_KEY" 'Space' "$C_DIM" ' toggle'
-        _tui_line "$C_KEY" 'a' "$C_DIM" ' all  ' "$C_KEY" 'Enter' "$C_DIM" ' confirm  ' "$C_KEY" 'q' "$C_DIM" ' quit'
+        _tui_line "$C_KEY" 'a' "$C_DIM" ' all (skips installed)  ' "$C_KEY" 'Enter' "$C_DIM" ' confirm  ' "$C_KEY" 'q' "$C_DIM" ' quit'
         if [ -n "${TUI_LEGEND:-}" ]; then
             _tui_line "$C_OK" 'green' "$C_DIM" ' = installed  ' "$C_YELLOW" 'yellow' "$C_DIM" ' = update+  ' "$C_ERR" 'red' "$C_DIM" ' = source gone'
         fi
         local ei estyle=""
         for ((ei = 0; ei < extra; ei++)); do
+            estyle=""
             [ "${#TUI_EXTRA_STYLE[@]}" -gt "$ei" ] && estyle="${TUI_EXTRA_STYLE[$ei]}"
             if [ -n "$estyle" ]; then
                 _tui_line "$estyle" "${TUI_EXTRA_KEYS[$ei]} ${TUI_EXTRA_DESCS[$ei]}"
@@ -970,15 +993,26 @@ tui_checklist() {
                 changed=1
                 ;;
             a)
+                # Bulk toggle: "all on" ticks only rows eligible for bulk
+                # (TUI_ITEM_BULK=1: missing/yellow components + options that
+                # are currently on); green/broken rows stay as they are so a
+                # bulk key never triggers mass reinstalls. "All off" clears
+                # every row, as before. Without TUI_ITEM_BULK, behaves as
+                # today (toggles everything).
+                local bulk_mode=0
+                [ "${#TUI_ITEM_BULK[@]}" -gt 0 ] && bulk_mode=1
                 local all_on=1
                 for ((i = 0; i < n; i++)); do
                     [ "${kinds[$i]}" = item ] || continue
+                    if [ "$bulk_mode" -eq 1 ] && [ "${TUI_ITEM_BULK[$i]:-1}" != "1" ]; then continue; fi
                     [ "${states[$i]}" = on ] || all_on=0
                 done
                 local target=on
                 [ "$all_on" -eq 1 ] && target=off
                 for ((i = 0; i < n; i++)); do
                     [ "${kinds[$i]}" = item ] || continue
+                    if [ "$target" = "on" ] && [ "$bulk_mode" -eq 1 ] \
+                        && [ "${TUI_ITEM_BULK[$i]:-1}" != "1" ]; then continue; fi
                     states[i]="$target"
                 done
                 changed=1
@@ -1107,18 +1141,50 @@ menu_update_tools() {
 # action): one entry per menu row, in the same order the rows were built.
 # Unified rule for both groups: green = installed+latest, yellow =
 # installed+upgradable, red = broken source, default = not installed.
+# Menu option rows (tag|description), single source of truth for show_menu
+# (item building) and refresh_menu_colors (one empty color entry each).
+# Option on/off state lives in APT_UPGRADE / SETUP_STORAGE / KILOCODE_NATIVE /
+# CLEANUP and is read when the items are built.
+menu_option_state() {
+    case "$1" in
+        apt_upgrade)     [ "$APT_UPGRADE" -eq 1 ] && echo on || echo off ;;
+        no_storage)      [ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off ;;
+        kilocode_native) [ "$KILOCODE_NATIVE" -eq 1 ] && echo on || echo off ;;
+        cleanup)         [ "$CLEANUP" -eq 1 ] && echo on || echo off ;;
+    esac
+}
+MENU_OPTIONS=(
+    "apt_upgrade|OPTION: apt update & upgrade before installing (recommended)"
+    "no_storage|OPTION: skip termux-setup-storage (shared storage)"
+    "kilocode_native|OPTION: kilocode - pick recommended native method (no prompt)"
+    "cleanup|OPTION: cleanup install stubs + caches after installing"
+)
+
 refresh_menu_colors() {
     local i=0
     TUI_ITEM_COLOR=()
-    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # sep: 3rd-party tools
-    for _c in "${THIRD_PARTY_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"; ((i++)) || true; done
-    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # sep: pkg tools
-    for _c in "${PKG_TOOL_COMPONENTS[@]}"; do TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"; ((i++)) || true; done
-    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # sep: options
-    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # apt_upgrade option
-    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # no_storage option
-    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # kilocode_native option
-    TUI_ITEM_COLOR[i]=""; ((i++)) || true                                   # cleanup option
+    TUI_ITEM_BULK=()
+    TUI_ITEM_COLOR[i]=""; TUI_ITEM_BULK[i]=""; ((i++)) || true                 # sep: 3rd-party tools
+    for _c in "${THIRD_PARTY_COMPONENTS[@]}"; do
+        TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"
+        [ "$(menu_default_state "$_c")" = "on" ] && TUI_ITEM_BULK[i]="1" || TUI_ITEM_BULK[i]="0"
+        ((i++)) || true
+    done
+    TUI_ITEM_COLOR[i]=""; TUI_ITEM_BULK[i]=""; ((i++)) || true                 # sep: pkg tools
+    for _c in "${PKG_TOOL_COMPONENTS[@]}"; do
+        TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"
+        [ "$(menu_default_state "$_c")" = "on" ] && TUI_ITEM_BULK[i]="1" || TUI_ITEM_BULK[i]="0"
+        ((i++)) || true
+    done
+    TUI_ITEM_COLOR[i]=""; TUI_ITEM_BULK[i]=""; ((i++)) || true                 # sep: options
+    local _o _tag
+    for _o in "${MENU_OPTIONS[@]}"; do
+        _tag="${_o%%|*}"
+        TUI_ITEM_COLOR[i]=""
+        # Options keep today's toggle behavior in bulk: eligible when on.
+        [ "$(menu_option_state "$_tag")" = "on" ] && TUI_ITEM_BULK[i]="1" || TUI_ITEM_BULK[i]="0"
+        ((i++)) || true
+    done
 }
 
 # Re-probe all statuses and rebuild row colors, suffixes, and toggles. Wired
@@ -1193,10 +1259,11 @@ show_menu() {
             items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
         done
         items+=("sep|options")
-        items+=("apt_upgrade|OPTION: apt update & upgrade before installing (recommended)|$([ "$APT_UPGRADE" -eq 1 ] && echo on || echo off)")
-        items+=("no_storage|OPTION: skip termux-setup-storage (shared storage)|$([ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off)")
-        items+=("kilocode_native|OPTION: kilocode - pick recommended native method (no prompt)|$([ "$KILOCODE_NATIVE" -eq 1 ] && echo on || echo off)")
-        items+=("cleanup|OPTION: cleanup install stubs + caches after installing|$([ "$CLEANUP" -eq 1 ] && echo on || echo off)")
+        local _o _tag _desc
+        for _o in "${MENU_OPTIONS[@]}"; do
+            _tag="${_o%%|*}"; _desc="${_o#*|}"
+            items+=("$_tag|$_desc|$(menu_option_state "$_tag")")
+        done
 
         # Shortcut keys: 's' saves a Kilo backup, 'u' updates what is installed,
         # 'p' installs prerequisites on demand (fresh Termux) and reloads the menu.
@@ -1315,13 +1382,29 @@ show_text_menu() {
     # offered, i.e. base prerequisites missing on a fresh Termux), 'r'
     # reloads after zoom-out/rotate (always offered in the fallback, where
     # the TUI is retried when the terminal is tall enough again).
-    echo "Commands: <numbers> toggle | a = toggle all | s = save kilo backup | u = update installed | <Enter> = confirm | q = quit"
+    echo "Commands: <numbers> toggle | a = toggle all (skips installed) | s = save kilo backup | u = update installed | <Enter> = confirm | q = quit"
     if prereqs_missing; then
         printf '%s%s%s\n' "$C_KEY" "p = install prerequisites (recommended on fresh Termux)" "$C_RESET"
     fi
     echo "r = zoom out and reload"
 
     local line t idx
+    _text_reprint() {
+        n=0
+        local j
+        for ((j = 0; j < ${#tags[@]}; j++)); do
+            if [ -z "${tags[$j]}" ]; then
+                echo "-- ${descs[$j]} --"
+                continue
+            fi
+            n=$((n + 1))
+            if [ "${states[$j]}" = on ]; then
+                printf '  %2d. [x] %s\n' "$n" "${descs[$j]}"
+            else
+                printf '  %2d. [ ] %s\n' "$n" "${descs[$j]}"
+            fi
+        done
+    }
     while true; do
         printf '> '
         IFS= read -r line || { echo; info "Cancelled."; exit 130; }
@@ -1329,18 +1412,52 @@ show_text_menu() {
             '') break ;;
             q|Q) info "Cancelled."; exit 130 ;;
             a|A)
+                # Same bulk rule as the TUI: "all on" ticks only rows whose
+                # default is on (missing/yellow + options on); green/broken
+                # stay as they are. "All off" clears every row.
                 local all_on=1
                 for ((i = 0; i < ${#tags[@]}; i++)); do
                     [ -n "${tags[$i]}" ] || continue
+                    case " ${ALL_COMPONENTS[*]} " in
+                        *" ${tags[$i]} "*)
+                            [ "$(menu_default_state "${tags[$i]}")" = "on" ] || continue ;;
+                    esac
                     [ "${states[$i]}" = on ] || all_on=0
                 done
                 for ((i = 0; i < ${#tags[@]}; i++)); do
                     [ -n "${tags[$i]}" ] || continue
-                    if [ "$all_on" -eq 1 ]; then states[i]="off"; else states[i]="on"; fi
+                    if [ "$all_on" -eq 1 ]; then
+                        states[i]="off"
+                        continue
+                    fi
+                    case " ${ALL_COMPONENTS[*]} " in
+                        *" ${tags[$i]} "*)
+                            [ "$(menu_default_state "${tags[$i]}")" = "on" ] || continue ;;
+                    esac
+                    states[i]="on"
                 done
                 ;;
             s|S) menu_save_kilo ;;
-            u|U) menu_update_tools_no_tui ;;
+            u|U)
+                menu_update_tools_no_tui
+                # Refresh suffixes + toggles like refresh_menu_status.
+                check_connectivity
+                probe_pkg_status
+                probe_tp_status
+                local ri st
+                for ((ri = 0; ri < ${#tags[@]}; ri++)); do
+                    [ -n "${tags[$ri]}" ] || continue
+                    case " ${ALL_COMPONENTS[*]} " in
+                        *" ${tags[$ri]} "*)
+                            descs[ri]="${COMP_DESC[${tags[$ri]}]}$(comp_suffix "${tags[$ri]}")"
+                            st="$(comp_status "${tags[$ri]}")"
+                            if [ "$st" = "current" ] || [ "$st" = "broken" ]; then
+                                states[ri]="off"
+                            fi ;;
+                    esac
+                done
+                refresh_menu_colors
+                ;;
             p|P)
                 # Already installed (p hidden this pass): don't reinstall in
                 # a loop, just stay in the menu.
@@ -1381,19 +1498,7 @@ show_text_menu() {
                 ;;
         esac
         # Re-print the list with the new toggles.
-        n=0
-        for ((i = 0; i < ${#tags[@]}; i++)); do
-            if [ -z "${tags[$i]}" ]; then
-                echo "-- ${descs[$i]} --"
-                continue
-            fi
-            n=$((n + 1))
-            if [ "${states[$i]}" = on ]; then
-                printf '  %2d. [x] %s\n' "$n" "${descs[$i]}"
-            else
-                printf '  %2d. [ ] %s\n' "$n" "${descs[$i]}"
-            fi
-        done
+        _text_reprint
     done
 
     local result=""
@@ -1439,17 +1544,27 @@ apply_menu_result() {
         esac
     done
 
-    # kilocode depends on core.
+    # kilocode depends on core — but only auto-enable when core is not
+    # already current (green): a current core must not be force-reinstalled.
     if is_selected kilocode && ! is_selected core; then
-        SELECTED[core]=1
-        warn "kilocode needs core; enabling core automatically"
+        if [ "$(comp_status core)" = "current" ]; then
+            info "kilocode needs core; core already installed, using it"
+        else
+            SELECTED[core]=1
+            warn "kilocode needs core; enabling core automatically"
+        fi
     fi
 
     # termux-shizuku-tools builds Rust Python extensions (jiter, pydantic-core);
     # without the rust toolchain that pip step aborts the whole setup.
+    # Same rule: never force-reinstall a green rust (~640 MB).
     if is_selected shizuku && ! is_selected rust; then
-        SELECTED[rust]=1
-        warn "termux-shizuku-tools needs rust; enabling rust automatically"
+        if [ "$(comp_status rust)" = "current" ]; then
+            info "termux-shizuku-tools needs rust; rust already installed, using it"
+        else
+            SELECTED[rust]=1
+            warn "termux-shizuku-tools needs rust; enabling rust automatically"
+        fi
     fi
 
     local any=0

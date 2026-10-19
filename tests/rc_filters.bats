@@ -1,7 +1,7 @@
 load helpers
 
 setup() {
-    rm -rf "$BATS_TMPDIR/t/t"; mkdir -p "$BATS_TMPDIR/t/t"
+    rm -rf "$BATS_TMPDIR/t"; mkdir -p "$BATS_TMPDIR/t"
     load_functions _starship_strip_filter _neofetch_strip_filter \
         _neofetch_has_closed_block rc_backup rc_rewrite register_temp \
         info warn
