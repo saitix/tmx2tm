@@ -103,6 +103,7 @@ done_step() { printf '\n%s==>%s %s%s%s\n' "$C_OK" "$C_RESET" "$C_OK" "$1" "$C_RE
 declare -a TEMP_PATHS=()
 MAIN_PID=$$
 register_temp() { TEMP_PATHS+=("$1"); }
+# shellcheck disable=SC2329  # invoked via trap
 cleanup_temps() {
     [ "$BASHPID" = "$MAIN_PID" ] || return 0
     local p
@@ -460,7 +461,7 @@ tp_installed() {
     case "$1" in
         copyparty) command -v copyparty >/dev/null 2>&1 || [ -x "$HOME/.local/bin/copyparty" ] ;;
         ytdlp)     command -v yt-dlp >/dev/null 2>&1 || [ -x "$HOME/.local/bin/yt-dlp" ] ;;
-        pydf)      command -v pydf >/dev/null 2>&1 ;;
+        pydf)      command -v pydf >/dev/null 2>&1 || [ -x "$HOME/.local/bin/pydf" ] ;;
         shizuku)   [ -d "$SHIZUKU_DIR/.git" ] ;;
         rish)      [ -e "$PREFIX/bin/rish" ] || [ -e "$HOME/rish" ] ;;
         core)      command -v core >/dev/null 2>&1 ;;
@@ -641,6 +642,11 @@ ensure_tp_status() {
     [ "${#TP_STATUS[@]}" -gt 0 ] || probe_tp_status
 }
 
+# Per-tool outcome map for the summary (task 11) and forgiving -y mode (S2):
+# RESULT[tag]="status|detail", status in installed|updated|skipped|failed|broken.
+declare -A RESULT=()
+record_result() { RESULT[$1]="$2|${3:-}"; }
+
 # Gate for a 3rd-party install stage. Sets TP_FORCE (0/1). Returns 0 = proceed
 # (fresh install, update, or forced reinstall of a green tool after an explicit
 # menu tick), 1 = skip (green tool in a non-menu run, or broken source).
@@ -654,9 +660,11 @@ tp_gate() {
         current)
             if [ "$MENU_CONFIRMED" -eq 1 ]; then TP_FORCE=1; return 0; fi
             info "'$tag' already installed (latest), skipping"
+            record_result "$tag" skipped "already installed (latest)"
             return 1 ;;
         broken)
             warn "'$tag' skipped (${TP_BROKEN_WHY[$tag]:-source gone})"
+            record_result "$tag" broken "${TP_BROKEN_WHY[$tag]:-source gone}"
             return 1 ;;
         *) return 0 ;;
     esac
@@ -1021,8 +1029,7 @@ menu_update_tools() {
     step "Updating selected 3rd-party tools"
     local any=0
 
-    if [ -n "${on[copyparty]:-}" ] \
-       && { command -v copyparty >/dev/null 2>&1 || [ -x "$HOME/.local/bin/copyparty" ]; }; then
+    if [ -n "${on[copyparty]:-}" ] && tp_installed copyparty; then
         any=1
         if python -m pip install --user -U copyparty >/dev/null; then
             ok "copyparty updated"
@@ -1031,8 +1038,7 @@ menu_update_tools() {
         fi
     fi
 
-    if [ -n "${on[ytdlp]:-}" ] \
-       && { command -v yt-dlp >/dev/null 2>&1 || [ -x "$HOME/.local/bin/yt-dlp" ]; }; then
+    if [ -n "${on[ytdlp]:-}" ] && tp_installed ytdlp; then
         any=1
         if python -m pip install --user -U yt-dlp >/dev/null; then
             ok "yt-dlp updated"
@@ -1041,7 +1047,7 @@ menu_update_tools() {
         fi
     fi
 
-    if [ -n "${on[pydf]:-}" ] && command -v pydf >/dev/null 2>&1; then
+    if [ -n "${on[pydf]:-}" ] && tp_installed pydf; then
         any=1
         if pip3 install -U pydf >/dev/null; then
             ok "pydf updated"
@@ -1050,7 +1056,7 @@ menu_update_tools() {
         fi
     fi
 
-    if [ -n "${on[shizuku]:-}" ] && [ -d "$SHIZUKU_DIR/.git" ]; then
+    if [ -n "${on[shizuku]:-}" ] && tp_installed shizuku; then
         any=1
         if git -C "$SHIZUKU_DIR" pull --ff-only \
            && ( cd "$SHIZUKU_DIR" && CARGO_BUILD_JOBS=1 bash setup.sh ); then
@@ -1060,7 +1066,7 @@ menu_update_tools() {
         fi
     fi
 
-    if [ -n "${on[rish]:-}" ] && { [ -e "$PREFIX/bin/rish" ] || [ -e "$HOME/rish" ]; }; then
+    if [ -n "${on[rish]:-}" ] && tp_installed rish; then
         any=1
         local tmp
         tmp=$(mktemp) || tmp=""
@@ -1075,7 +1081,7 @@ menu_update_tools() {
         [ -n "$tmp" ] && rm -f "$tmp"
     fi
 
-    if [ -n "${on[core]:-}" ] && command -v core >/dev/null 2>&1; then
+    if [ -n "${on[core]:-}" ] && tp_installed core; then
         any=1
         if core update core; then
             ok "core-termux updated"
@@ -1084,7 +1090,7 @@ menu_update_tools() {
         fi
     fi
 
-    if [ -n "${on[kilocode]:-}" ] && command -v kilocode >/dev/null 2>&1; then
+    if [ -n "${on[kilocode]:-}" ] && tp_installed kilocode; then
         any=1
         if core update ai --kilocode-cli; then
             ok "kilocode-cli updated"
@@ -1122,6 +1128,7 @@ refresh_menu_colors() {
 # Refresh-hook contract (see the TUI_EXTRA_STREAM comment): this runs in
 # tui_checklist's scope and may read/write n, kinds, tags, descs, states,
 # plus the TUI_EXTRA_* arrays; tui_checklist recomputes extra/lines after.
+# shellcheck disable=SC2329  # invoked via TUI_REFRESH_FN
 refresh_menu_status() {
     check_connectivity
     probe_pkg_status
@@ -1550,6 +1557,7 @@ setup_golang_path() {
 # Filter: drop one starship snippet block (marker + its exact body lines).
 # Reads the file on stdin, writes the result on stdout. Only removes lines
 # when they follow the marker in order, so user `fi` lines survive.
+# shellcheck disable=SC2329  # invoked via rc_rewrite
 _starship_strip_filter() {
     awk '
         $0 == "# Initialize Starship only once, if installed" { skip=3; next }
@@ -1624,6 +1632,7 @@ setup_starship_init() {
 # Filter: drop the neofetch block only when start AND end markers match.
 # An unclosed legacy block drops just the start marker plus the known snippet
 # lines (if/neofetch/fi), leaving unrelated user lines after it intact.
+# shellcheck disable=SC2329  # invoked via rc_rewrite
 _neofetch_strip_filter() {
     awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' '
         function flush(legacy,   i, start) {
@@ -1746,27 +1755,62 @@ install_pkg_tools() {
 
     if [ "${#skipped[@]}" -gt 0 ]; then
         info "Already installed (latest), skipping: ${skipped[*]}"
+        for c in "${skipped[@]}"; do
+            case " ${PKG_TOOL_COMPONENTS[*]} " in
+                *" $c "*) record_result "$c" skipped "already installed (latest)" ;;
+            esac
+        done
     fi
+    # Batch install first; on failure retry each package alone so one bad
+    # package does not block the rest (S2). Failures record + warn, never die.
     if [ "${#pkgs[@]}" -gt 0 ]; then
         step "Installing pkg tools"
         progress "pkg install: ${pkgs[*]}"
-        pkg install -y "${pkgs[@]}" || die "Failed to install pkg tools"
-        ok "pkg tools installed"
+        if pkg install -y "${pkgs[@]}"; then
+            ok "pkg tools installed"
+        else
+            warn "Batch install failed; retrying each package alone"
+            local p
+            for p in "${pkgs[@]}"; do
+                if pkg install -y "$p"; then
+                    ok "$p installed"
+                else
+                    warn "$p failed to install; continuing"
+                fi
+            done
+        fi
     fi
     if [ "${#reinstall_pkgs[@]}" -gt 0 ]; then
         step "Reinstalling explicitly selected pkg tools"
         progress "pkg reinstall: ${reinstall_pkgs[*]}"
-        pkg reinstall -y "${reinstall_pkgs[@]}" || die "Failed to reinstall pkg tools"
-        ok "pkg tools reinstalled"
+        local p
+        for p in "${reinstall_pkgs[@]}"; do
+            if pkg reinstall -y "$p"; then
+                ok "$p reinstalled"
+            else
+                warn "$p failed to reinstall; continuing"
+            fi
+        done
     fi
     if [ "${#pkgs[@]}" -eq 0 ] && [ "${#reinstall_pkgs[@]}" -eq 0 ]; then
         info "All selected pkg tools are already installed at the latest version"
     fi
 
+    # Verify each selected tool by its binary and record the outcome.
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
         is_selected "$c" || continue
         bin="${PKG_COMPONENT_CMD[$c]:-$c}"
-        ok "$c -> $(command -v "$bin" || echo missing)"
+        if command -v "$bin" >/dev/null 2>&1; then
+            ok "$c -> $(command -v "$bin")"
+            if [ "$MENU_CONFIRMED" -eq 1 ] && [ "${PKG_STATUS[$c]:-missing}" = "current" ]; then
+                record_result "$c" updated "$(command -v "$bin")"
+            elif [ -z "${RESULT[$c]:-}" ]; then
+                record_result "$c" installed "$(command -v "$bin")"
+            fi
+        else
+            warn "$c not found after install"
+            record_result "$c" failed "binary '$bin' missing after install"
+        fi
     done
 
     if is_selected golang; then
@@ -1794,8 +1838,13 @@ install_pip_tools() {
             # TP_FORCE=1 after an explicit menu tick on a green tool.
             local force_flag=()
             [ "$TP_FORCE" -eq 1 ] && force_flag=(--force-reinstall)
-            python -m pip install --user "${force_flag[@]}" -U copyparty || die "pip install copyparty failed"
-            ok "copyparty -> $(command -v copyparty || echo "$HOME/.local/bin/copyparty")"
+            if python -m pip install --user "${force_flag[@]}" -U copyparty; then
+                ok "copyparty -> $(command -v copyparty || echo "$HOME/.local/bin/copyparty")"
+                record_result copyparty installed "$(command -v copyparty 2>/dev/null || echo "$HOME/.local/bin/copyparty")"
+            else
+                warn "pip install copyparty failed; continuing"
+                record_result copyparty failed "pip install failed"
+            fi
         fi
     fi
 
@@ -1803,8 +1852,13 @@ install_pip_tools() {
         if tp_gate ytdlp; then
             local force_flag=()
             [ "$TP_FORCE" -eq 1 ] && force_flag=(--force-reinstall)
-            python -m pip install --user "${force_flag[@]}" -U yt-dlp || die "pip install yt-dlp failed"
-            ok "yt-dlp -> $(command -v yt-dlp || echo "$HOME/.local/bin/yt-dlp")"
+            if python -m pip install --user "${force_flag[@]}" -U yt-dlp; then
+                ok "yt-dlp -> $(command -v yt-dlp || echo "$HOME/.local/bin/yt-dlp")"
+                record_result ytdlp installed "$(command -v yt-dlp 2>/dev/null || echo "$HOME/.local/bin/yt-dlp")"
+            else
+                warn "pip install yt-dlp failed; continuing"
+                record_result ytdlp failed "pip install failed"
+            fi
         fi
     fi
 
@@ -1812,8 +1866,13 @@ install_pip_tools() {
         if tp_gate pydf; then
             local force_flag=()
             [ "$TP_FORCE" -eq 1 ] && force_flag=(--force-reinstall)
-            pip3 install "${force_flag[@]}" -U pydf || die "pip3 install pydf failed"
-            ok "pydf -> $(command -v pydf || echo missing)"
+            if pip3 install "${force_flag[@]}" -U pydf; then
+                ok "pydf -> $(command -v pydf || echo missing)"
+                record_result pydf installed "$(command -v pydf 2>/dev/null || echo installed)"
+            else
+                warn "pip3 install pydf failed; continuing"
+                record_result pydf failed "pip install failed"
+            fi
         fi
     fi
 
@@ -1846,8 +1905,11 @@ install_shizuku_tools() {
         git -C "$SHIZUKU_DIR" pull --ff-only || warn "git pull failed; using existing checkout"
     else
         progress "Cloning $REPO_SHIZUKU"
-        git clone --depth=1 "$REPO_SHIZUKU" "$SHIZUKU_DIR" \
-            || die "Failed to clone termux-shizuku-tools"
+        if ! git clone --depth=1 "$REPO_SHIZUKU" "$SHIZUKU_DIR"; then
+            warn "Failed to clone termux-shizuku-tools; continuing"
+            record_result shizuku failed "git clone failed"
+            return 0
+        fi
     fi
 
     chmod +x "$SHIZUKU_DIR/setup.sh"
@@ -1872,6 +1934,11 @@ install_shizuku_tools() {
     ensure_bashrc_line '[ -f ~/.shizuku_env ] && source ~/.shizuku_env'
 
     ok "termux-shizuku-tools installed at $SHIZUKU_DIR"
+    if [ "$TP_FORCE" -eq 1 ]; then
+        record_result shizuku updated "$SHIZUKU_DIR"
+    else
+        record_result shizuku installed "$SHIZUKU_DIR"
+    fi
 }
 
 install_rish() {
@@ -1898,7 +1965,9 @@ install_rish() {
     register_temp "$tmp"
     if ! curl -fsSL --max-time 60 --connect-timeout 10 "$REPO_RISH_INSTALL" -o "$tmp"; then
         rm -f "$tmp"
-        die "Failed to download rish_installer.sh"
+        warn "Failed to download rish_installer.sh; continuing"
+        record_result rish failed "download failed"
+        return 0
     fi
 
     # Interactive menu picks the APK source; silent mode uses the recommended
@@ -1912,16 +1981,21 @@ install_rish() {
 
     if ! bash "$tmp" "${flags[@]}"; then
         rm -f "$tmp"
-        die "rish installer failed"
+        warn "rish installer failed; continuing"
+        record_result rish failed "upstream installer failed"
+        return 0
     fi
     rm -f "$tmp"
 
     if [ -e "$PREFIX/bin/rish" ]; then
         ok "rish installed -> $PREFIX/bin/rish"
+        record_result rish installed "$PREFIX/bin/rish"
     elif [ -e "$HOME/rish" ]; then
         ok "rish installed -> $HOME/rish"
+        record_result rish installed "$HOME/rish"
     else
         warn "rish not found after install; check the installer output above"
+        record_result rish failed "rish binary missing after install"
     fi
     info "Requires the Shizuku app running and this terminal authorized in it"
 }
@@ -1942,6 +2016,8 @@ install_core() {
 
     # TP_FORCE=1 after an explicit menu tick on a green tool: rerun the
     # upstream installer instead of taking the already-installed shortcut.
+    # install_core needs the -x check (not just tp_installed): the binary must
+    # be executable for the `core install` calls below to work.
     if [ "$TP_FORCE" -eq 0 ] && [ -x "$PREFIX/bin/core" ]; then
         ok "core already installed: $PREFIX/bin/core"
         return
@@ -1955,19 +2031,25 @@ install_core() {
     if ! curl -fsSL --max-time 60 --connect-timeout 10 "$REPO_CORE_INSTALL" -o "$tmp" \
         || [ ! -s "$tmp" ]; then
         rm -f "$tmp"
-        die "Failed to download core-termux installer"
+        warn "Failed to download core-termux installer; continuing"
+        record_result core failed "download failed"
+        return 0
     fi
     progress "Running official core-termux installer"
     if ! bash "$tmp"; then
         rm -f "$tmp"
-        die "core-termux installer failed"
+        warn "core-termux installer failed; continuing"
+        record_result core failed "upstream installer failed"
+        return 0
     fi
     rm -f "$tmp"
 
     if [ -e "$PREFIX/bin/core" ]; then
         ok "core installed (run: core)"
+        record_result core installed "$PREFIX/bin/core"
     else
         warn "core command not found after install; check the installer output above"
+        record_result core failed "core binary missing after install"
     fi
 }
 
@@ -1984,24 +2066,45 @@ install_kilocode() {
         return
     fi
 
-    command -v core >/dev/null 2>&1 || die "core is required to install kilocode-cli"
+    # kilocode depends on core: if core failed, skip instead of attempting.
+    if [ -n "${RESULT[core]:-}" ]; then
+        case "${RESULT[core]}" in
+            failed*)
+                warn "kilocode skipped (needs core, which failed)"
+                record_result kilocode skipped "needs core"
+                return 0 ;;
+        esac
+    fi
+    if ! command -v core >/dev/null 2>&1; then
+        warn "core is required to install kilocode-cli; skipping"
+        record_result kilocode skipped "needs core"
+        return 0
+    fi
 
     # core's installer shows an interactive menu (native / native+proot / proot-distro).
     # Option 0 ("glibc (recommended)") is the default; an empty keypress (Enter) selects it.
     if [ "$KILOCODE_NATIVE" -eq 1 ] || [ ! -t 0 ]; then
         progress "Selecting recommended 'glibc (recommended)' method non-interactively"
         if ! printf '\n' | TERM="${TERM:-xterm-256color}" core install ai --kilocode-cli; then
-            die "core install ai --kilocode-cli failed"
+            warn "core install ai --kilocode-cli failed; continuing"
+            record_result kilocode failed "core install failed"
+            return 0
         fi
     else
         info "Follow the on-screen prompt to choose an install method"
-        core install ai --kilocode-cli || die "core install ai --kilocode-cli failed"
+        if ! core install ai --kilocode-cli; then
+            warn "core install ai --kilocode-cli failed; continuing"
+            record_result kilocode failed "core install failed"
+            return 0
+        fi
     fi
 
     if command -v kilocode >/dev/null 2>&1; then
         ok "kilocode-cli installed (commands: kilocode, kilo)"
+        record_result kilocode installed "$(command -v kilocode)"
     else
         warn "kilocode command not found after install; check output above"
+        record_result kilocode failed "kilocode binary missing after install"
     fi
 }
 
@@ -2146,23 +2249,60 @@ cleanup_stubs() {
 
 print_summary() {
     done_step "Installation complete (tmx2tm.sh v$SCRIPT_VERSION)"
+    local c st detail
     echo
-    printf '  %sInstalled tools%s\n' "$C_BLUE" "$C_RESET"
-    local c
+    printf '  %sInstalled tools%s\n' "$C_OK" "$C_RESET"
     for c in "${ALL_COMPONENTS[@]}"; do
-        is_selected "$c" || continue
-        printf '    %-14s %s\n' "$c" "${COMP_HINT[$c]}"
+        [ -n "${RESULT[$c]:-}" ] || continue
+        st="${RESULT[$c]%%|*}"
+        case "$st" in
+            installed|updated)
+                printf '    %-14s %s\n' "$c" "${COMP_HINT[$c]}" ;;
+        esac
     done
 
     echo
-    printf '  %sNext steps%s\n' "$C_BLUE" "$C_RESET"
-    printf '    1. Reload your shell:  %ssource ~/.bashrc%s\n' "$C_DIM" "$C_RESET"
-    if is_selected shizuku; then
-        printf '    2. Start Shizuku on the device, then test: %sshizuku-status%s\n' "$C_DIM" "$C_RESET"
-    fi
-    if is_selected core; then
-        printf '    3. Explore core modules: %score list%s\n' "$C_DIM" "$C_RESET"
-    fi
+    printf '  %sSkipped%s\n' "$C_YELLOW" "$C_RESET"
+    local any_skip=0
+    for c in "${ALL_COMPONENTS[@]}"; do
+        [ -n "${RESULT[$c]:-}" ] || continue
+        st="${RESULT[$c]%%|*}"; detail="${RESULT[$c]#*|}"
+        case "$st" in
+            skipped|broken)
+                printf '    %-14s %s\n' "$c" "$detail"
+                any_skip=1 ;;
+        esac
+    done
+    [ "$any_skip" -eq 0 ] && printf '    %s(none)%s\n' "$C_DIM" "$C_RESET"
+
+    echo
+    printf '  %sFailed%s\n' "$C_ERR" "$C_RESET"
+    local any_fail=0
+    for c in "${ALL_COMPONENTS[@]}"; do
+        [ -n "${RESULT[$c]:-}" ] || continue
+        st="${RESULT[$c]%%|*}"; detail="${RESULT[$c]#*|}"
+        if [ "$st" = "failed" ]; then
+            printf '    %-14s %s\n' "$c" "$detail"
+            any_fail=1
+        fi
+    done
+    [ "$any_fail" -eq 0 ] && printf '    %s(none)%s\n' "$C_DIM" "$C_RESET"
+
+    echo
+    printf '  %sNext steps%s\n' "$C_OK" "$C_RESET"
+    local n=1
+    printf '    %d. Reload your shell:  %ssource ~/.bashrc%s\n' "$n" "$C_DIM" "$C_RESET"
+    n=$((n + 1))
+    case "${RESULT[shizuku]:-}" in
+        installed*|updated*)
+            printf '    %d. Start Shizuku on the device, then test: %sshizuku-status%s\n' "$n" "$C_DIM" "$C_RESET"
+            n=$((n + 1)) ;;
+    esac
+    case "${RESULT[core]:-}" in
+        installed*|updated*)
+            printf '    %d. Explore core modules: %score list%s\n' "$n" "$C_DIM" "$C_RESET"
+            n=$((n + 1)) ;;
+    esac
     echo
 }
 
@@ -2293,6 +2433,16 @@ main() {
     install_kilocode
     cleanup_stubs
     print_summary
+    # Exit code for scripted -y runs: 0 when everything succeeded or was
+    # skipped, 2 when any selected tool failed (others still ran).
+    local tag st
+    for tag in "${ALL_COMPONENTS[@]}"; do
+        st="${RESULT[$tag]%%|*}"
+        if [ "$st" = "failed" ]; then
+            exit 2
+        fi
+    done
+    exit 0
 }
 
 main
