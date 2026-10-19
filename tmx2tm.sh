@@ -1985,14 +1985,6 @@ install_pkg_tools() {
     if is_selected golang; then
         setup_golang_path
     fi
-
-    # Starship snippet sync runs unconditionally (not gated on selection): it
-    # ensures the snippet in both rc files when installed, and removes it
-    # from both when the user uninstalled starship.
-    setup_starship_init
-    # Neofetch snippet sync: same unconditional rule as starship, but
-    # profile-only (zellij re-sources .bashrc per pane/tab).
-    setup_neofetch_init
 }
 
 install_pip_tools() {
@@ -2609,6 +2601,12 @@ main() {
     install_rish
     install_core
     install_kilocode
+    # Shell snippet sync, unconditional on every install run (not gated on
+    # selection): binary present -> snippet ensured; binary absent and tool
+    # not selected -> snippet removed so uninstalled tools leave no trace.
+    # Starship syncs both rc files; neofetch is profile-only.
+    setup_starship_init
+    setup_neofetch_init
     cleanup_stubs
     print_summary
     # Exit code for scripted -y runs: 0 when everything succeeded or was
