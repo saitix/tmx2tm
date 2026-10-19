@@ -96,6 +96,12 @@ warn() { printf '    %s[!]%s %s\n' "$C_WARN" "$C_RESET" "$1"; }
 die()  { printf '\n%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
 done_step() { printf '\n%s==>%s %s%s%s\n' "$C_OK" "$C_RESET" "$C_OK" "$1" "$C_RESET"; }
 
+# Non-interactive pkg/apt wrapper: every install/upgrade/reinstall goes
+# through here so dpkg can never stop an unattended run at a conffile prompt.
+pkg_noninteractive() {
+    DEBIAN_FRONTEND=noninteractive "$@" -o Dpkg::Options::="--force-confold"
+}
+
 # Temp registry + exit trap: every mktemp path registers here so errors never
 # leave temp dirs behind or a hidden cursor. cleanup_temps runs on EXIT only;
 # INT/TERM handlers below exit with the conventional codes so Ctrl-C actually
@@ -134,6 +140,18 @@ SCRIPT_VERSION="0.9"
 REPO_SHIZUKU="https://github.com/jecis-repos/termux-shizuku-tools.git"
 REPO_CORE_INSTALL="https://raw.githubusercontent.com/DevCoreXOfficial/core-termux/main/install.sh"
 REPO_RISH_INSTALL="https://raw.githubusercontent.com/merbah3266/rish_installer/main/rish_installer.sh"
+
+# Network timeouts (seconds): every network call uses one of these — never a
+# literal. Probes run in parallel, so the worst-case menu wait is bounded by
+# the slowest single probe (~GIT_PROBE_TIMEOUT + GH_API_TIMEOUT), not the sum.
+NET_CHECK_TIMEOUT=10    # check_connectivity curl --max-time
+NET_CONNECT_TIMEOUT=10  # every curl --connect-timeout
+GIT_PROBE_TIMEOUT=30    # timeout around git ls-remote (both call sites)
+GH_API_TIMEOUT=15       # GitHub API archived check --max-time
+PIP_INDEX_TIMEOUT=40    # outer timeout around pip index versions
+PIP_NET_TIMEOUT=20      # pip's own --timeout
+PYPI_PROBE_TIMEOUT=15   # curl to pypi.org/simple/<pkg>/ --max-time
+DOWNLOAD_TIMEOUT=120    # installer downloads (rish, core) --max-time
 
 SHIZUKU_DIR="$HOME/termux-shizuku-tools"
 BASHRC="$HOME/.bashrc"
@@ -406,9 +424,10 @@ menu_default_state() {
 # Same state model as the pkg tools, plus "broken" (red): the component's
 # upstream source is unreachable, archived, or gone. Probes run in parallel
 # background jobs (one per tool) so the menu does not wait on slow networks;
-# every network call carries a short --max-time and failures fall back to a
-# safe verdict instead of hanging. Results land in TP_STATUS (tag -> state)
-# with reasons in TP_BROKEN_WHY (tag -> e.g. "source unreachable").
+# every network call uses one of the NET_*/GIT_*/PIP_* timeout variables and
+# failures fall back to a safe verdict instead of hanging. Results land in
+# TP_STATUS (tag -> state) with reasons in TP_BROKEN_WHY (tag -> e.g.
+# "source unreachable").
 declare -A TP_STATUS=()
 declare -A TP_BROKEN_WHY=()
 
@@ -426,19 +445,20 @@ NET_PKG=0
 
 # Fast parallel reachability check for the three source families the probes
 # depend on: github (git tools), PyPI (pip tools), and the configured apt
-# mirror (pkg index freshness). Each curl is capped at 5s; the three run in
-# parallel so the worst case is ~5s, and offline fails fast (no route).
+# mirror (pkg index freshness). Each curl uses NET_CHECK_TIMEOUT; the three
+# run in parallel so the worst case is ~NET_CHECK_TIMEOUT, and offline fails
+# fast (no route).
 check_connectivity() {
     NET_GITHUB=0; NET_PYPI=0; NET_PKG=0
     local tmpnet mirror
     tmpnet=$(mktemp -d 2>/dev/null) || return 0
     register_temp "$tmpnet"
-    ( curl -fsSL --max-time 5 -o /dev/null https://github.com >/dev/null 2>&1 \
+    ( curl -fsSL --max-time "$NET_CHECK_TIMEOUT" -o /dev/null https://github.com >/dev/null 2>&1 \
         && echo 1 >"$tmpnet/gh" || echo 0 >"$tmpnet/gh" ) &
-    ( curl -fsSL --max-time 5 -o /dev/null https://pypi.org/simple/ >/dev/null 2>&1 \
+    ( curl -fsSL --max-time "$NET_CHECK_TIMEOUT" -o /dev/null https://pypi.org/simple/ >/dev/null 2>&1 \
         && echo 1 >"$tmpnet/pypi" || echo 0 >"$tmpnet/pypi" ) &
     mirror=$(apt-cache policy 2>/dev/null | grep -o 'http[^ ]*' | head -1)
-    ( [ -n "$mirror" ] && curl -fsSL --max-time 5 -o /dev/null "$mirror" >/dev/null 2>&1 \
+    ( [ -n "$mirror" ] && curl -fsSL --max-time "$NET_CHECK_TIMEOUT" -o /dev/null "$mirror" >/dev/null 2>&1 \
         && echo 1 >"$tmpnet/pkg" || echo 0 >"$tmpnet/pkg" ) &
     wait
     NET_GITHUB=$(cat "$tmpnet/gh" 2>/dev/null || echo 0)
@@ -491,10 +511,10 @@ tp_installed() {
 # skips the archived check instead of crying wolf — reachability already
 # covered the offline case.
 tp_git_repo_state() {
-    GIT_TERMINAL_PROMPT=0 timeout 10 git ls-remote "https://github.com/$1.git" HEAD >/dev/null 2>&1 \
+    GIT_TERMINAL_PROMPT=0 timeout "$GIT_PROBE_TIMEOUT" git ls-remote "https://github.com/$1.git" HEAD >/dev/null 2>&1 \
         || { echo unreachable; return; }
     local archived
-    archived=$(curl -fsSL --max-time 8 --connect-timeout 5 "https://api.github.com/repos/$1" 2>/dev/null \
+    archived=$(curl -fsSL --max-time "$GH_API_TIMEOUT" --connect-timeout "$NET_CONNECT_TIMEOUT" "https://api.github.com/repos/$1" 2>/dev/null \
         | grep -o '"archived": *[a-z]*' | awk '{print $2}')
     if [ "$archived" = "true" ]; then echo archived; else echo ok; fi
 }
@@ -514,7 +534,7 @@ tp_probe_pip() {
     fi
     local inst latest
     inst=$(pip show "$pkg" 2>/dev/null | awk '/^Version: /{print $2; exit}')
-    latest=$(timeout 15 pip index versions --timeout 8 --retries 0 "$pkg" 2>/dev/null \
+    latest=$(timeout "$PIP_INDEX_TIMEOUT" pip index versions --timeout "$PIP_NET_TIMEOUT" --retries 0 "$pkg" 2>/dev/null \
         | sed -n 's/^Available versions: //p' | cut -d, -f1 | tr -d ' ')
     if [ -n "$latest" ]; then
         if [ -n "$inst" ] && [ "$inst" = "$latest" ]; then
@@ -530,7 +550,7 @@ tp_probe_pip() {
         printf 'current\n\n'
         return
     fi
-    if curl -fsSL --max-time 8 --connect-timeout 5 "https://pypi.org/simple/$pkg/" >/dev/null 2>&1; then
+    if curl -fsSL --max-time "$PYPI_PROBE_TIMEOUT" --connect-timeout "$NET_CONNECT_TIMEOUT" "https://pypi.org/simple/$pkg/" >/dev/null 2>&1; then
         printf 'current\n\n'
     else
         printf 'broken\nnot on PyPI\n'
@@ -573,7 +593,7 @@ tp_probe_git() {
             printf 'current\n\n'
             return
         fi
-        remote_head=$(GIT_TERMINAL_PROMPT=0 timeout 10 git ls-remote "https://github.com/$repo.git" HEAD 2>/dev/null | awk '{print $1}')
+        remote_head=$(GIT_TERMINAL_PROMPT=0 timeout "$GIT_PROBE_TIMEOUT" git ls-remote "https://github.com/$repo.git" HEAD 2>/dev/null | awk '{print $1}')
         if [ -z "$remote_head" ]; then
             printf 'broken\nsource unreachable\n'
             return
@@ -1055,8 +1075,8 @@ menu_update_tools() {
     for c in ${TUI_ON_TAGS:-}; do on[$c]=1; done
 
     step "Updating pkg packages (pkg update && pkg upgrade)"
-    DEBIAN_FRONTEND=noninteractive pkg update -y || warn "pkg update reported errors; continuing"
-    DEBIAN_FRONTEND=noninteractive pkg upgrade -y -o Dpkg::Options::="--force-confold" \
+    pkg_noninteractive pkg update -y || warn "pkg update reported errors; continuing"
+    pkg_noninteractive pkg upgrade -y \
         || warn "pkg upgrade reported errors; continuing"
     ok "pkg packages updated"
 
@@ -1106,7 +1126,7 @@ menu_update_tools() {
         tmp=$(mktemp) || tmp=""
         [ -n "$tmp" ] && register_temp "$tmp"
         # Force the non-interactive path: the output is captured below this menu.
-        if [ -n "$tmp" ] && curl -fsSL --max-time 60 --connect-timeout 10 "$REPO_RISH_INSTALL" -o "$tmp" \
+        if [ -n "$tmp" ] && curl -fsSL --max-time "$DOWNLOAD_TIMEOUT" --connect-timeout "$NET_CONNECT_TIMEOUT" "$REPO_RISH_INSTALL" -o "$tmp" \
            && bash "$tmp" --reinstall --silent --source default; then
             ok "rish updated"
         else
@@ -1613,7 +1633,7 @@ update_apt() {
     step "Running apt update & upgrade"
     DEBIAN_FRONTEND=noninteractive apt update -y \
         || warn "apt update reported errors; continuing anyway"
-    DEBIAN_FRONTEND=noninteractive apt upgrade -y -o Dpkg::Options::="--force-confold" \
+    pkg_noninteractive apt upgrade -y \
         || warn "apt upgrade reported errors; continuing anyway"
     ok "apt update & upgrade finished"
 }
@@ -1621,7 +1641,7 @@ update_apt() {
 install_base_deps() {
     step "Installing base pkg dependencies"
     progress "pkg install: ${BASE_PKG_DEPS[*]}"
-    pkg install -y "${BASE_PKG_DEPS[@]}" || die "Failed to install base pkg dependencies"
+    pkg_noninteractive pkg install -y "${BASE_PKG_DEPS[@]}" || die "Failed to install base pkg dependencies"
     ok "Base dependencies installed"
 }
 
@@ -1915,13 +1935,13 @@ install_pkg_tools() {
     if [ "${#pkgs[@]}" -gt 0 ]; then
         step "Installing pkg tools"
         progress "pkg install: ${pkgs[*]}"
-        if pkg install -y "${pkgs[@]}"; then
+        if pkg_noninteractive pkg install -y "${pkgs[@]}"; then
             ok "pkg tools installed"
         else
             warn "Batch install failed; retrying each package alone"
             local p
             for p in "${pkgs[@]}"; do
-                if pkg install -y "$p"; then
+                if pkg_noninteractive pkg install -y "$p"; then
                     ok "$p installed"
                 else
                     warn "$p failed to install; continuing"
@@ -1934,7 +1954,7 @@ install_pkg_tools() {
         progress "pkg reinstall: ${reinstall_pkgs[*]}"
         local p
         for p in "${reinstall_pkgs[@]}"; do
-            if pkg reinstall -y "$p"; then
+            if pkg_noninteractive pkg reinstall -y "$p"; then
                 ok "$p reinstalled"
             else
                 warn "$p failed to reinstall; continuing"
@@ -2112,7 +2132,7 @@ install_rish() {
     local tmp
     tmp=$(mktemp) || die "mktemp failed"
     register_temp "$tmp"
-    if ! curl -fsSL --max-time 60 --connect-timeout 10 "$REPO_RISH_INSTALL" -o "$tmp"; then
+    if ! curl -fsSL --max-time "$DOWNLOAD_TIMEOUT" --connect-timeout "$NET_CONNECT_TIMEOUT" "$REPO_RISH_INSTALL" -o "$tmp"; then
         rm -f "$tmp"
         warn "Failed to download rish_installer.sh; continuing"
         record_result rish failed "download failed"
@@ -2177,7 +2197,7 @@ install_core() {
     local tmp
     tmp=$(mktemp) || die "mktemp failed"
     register_temp "$tmp"
-    if ! curl -fsSL --max-time 60 --connect-timeout 10 "$REPO_CORE_INSTALL" -o "$tmp" \
+    if ! curl -fsSL --max-time "$DOWNLOAD_TIMEOUT" --connect-timeout "$NET_CONNECT_TIMEOUT" "$REPO_CORE_INSTALL" -o "$tmp" \
         || [ ! -s "$tmp" ]; then
         rm -f "$tmp"
         warn "Failed to download core-termux installer; continuing"
@@ -2278,6 +2298,20 @@ human_size() {
 # tool-owned temp stubs (core-*, rish*), and __pycache__/*.pyc inside the
 # tool lib dirs. Never touches installed tools, other programs' temp files,
 # or the go module cache (re-downloading modules is expensive on mobile).
+# Size of exactly what the cleanup's pyc step deletes: __pycache__ dirs plus
+# stray *.pyc files outside them, under the two lib trees. One helper for the
+# before/after figures so they cannot drift apart. Grand total via du -cb;
+# empty input prints nothing, so default to 0 (never du's cwd size).
+pyc_size() {
+    local out
+    out=$(find "$HOME/.local/lib" "$SHIZUKU_DIR" \
+        \( -type d -name '__pycache__' -print \) -o \
+        \( -type f -name '*.pyc' -print \) 2>/dev/null \
+        | tr '\n' '\0' | du -cb --files0-from=- 2>/dev/null | tail -1 | awk '{print $1}')
+    case "$out" in ''|*[!0-9]*) out=0 ;; esac
+    printf '%s' "$out"
+}
+
 cleanup_stubs() {
     [ "$CLEANUP" -eq 1 ] || return 0
 
@@ -2285,7 +2319,8 @@ cleanup_stubs() {
 
     # Measure the reclaimable size in advance: du over exactly the paths the
     # pass removes (existing ones only), so the figure is the cleanup's own
-    # footprint. The two lib trees contribute only their pyc portion (_pyc).
+    # footprint. The two lib trees contribute only their pyc portion.
+    local tmpd="${TMPDIR:-$PREFIX/tmp}"
     local -a _cl=()
     local _p _pipdir
     for _p in "$HOME/.cache/pip" "$HOME/.cache/uv" "$HOME/.npm" \
@@ -2296,8 +2331,8 @@ cleanup_stubs() {
     if [ -n "${CARGO_HOME:-}" ] && [ -e "$CARGO_HOME/registry" ]; then
         _cl+=("$CARGO_HOME/registry")
     fi
-    for _p in "$TMPDIR"/pip-* "$TMPDIR"/pip_build_* "$PREFIX"/tmp/pip-* \
-              "$TMPDIR"/core-* "$TMPDIR"/rish*; do
+    for _p in "$tmpd"/pip-* "$tmpd"/pip_build_* \
+              "$tmpd"/core-* "$tmpd"/rish*; do
         # Globs that match nothing stay literal: keep only existing paths.
         if [ -e "$_p" ]; then _cl+=("$_p"); fi
     done
@@ -2312,15 +2347,11 @@ cleanup_stubs() {
     fi
     local reclaim=0 _sz
     if [ "${#_cl[@]}" -gt 0 ]; then
-        _sz=$(du -sb "${_cl[@]}" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+        _sz=$(du -cb "${_cl[@]}" 2>/dev/null | tail -1 | awk '{print $1}')
         case "$_sz" in ''|*[!0-9]*) _sz=0 ;; esac
         reclaim=$((reclaim + _sz))
     fi
-    local _pyc
-    _pyc=$(find "$HOME/.local/lib" "$SHIZUKU_DIR" \( -type d -name '__pycache__' -prune \) -o \( -type f -name '*.pyc' -print \) 2>/dev/null \
-        | tr '\n' '\0' | du -sb --files0-from=- 2>/dev/null | tail -1 | awk '{print $1}')
-    case "$_pyc" in ''|*[!0-9]*) _pyc=0 ;; esac
-    reclaim=$((reclaim + _pyc))
+    reclaim=$((reclaim + $(pyc_size)))
 
     if [ "$reclaim" -gt 0 ]; then
         progress "Reclaimable: $(human_size "$reclaim") — removing now..."
@@ -2336,7 +2367,7 @@ cleanup_stubs() {
     fi
     # pip build dirs outside the cache (wheels, isolated-build envs, uv cache).
     rm -rf "$HOME/.cache/pip" "$HOME/.cache/uv" \
-        "$TMPDIR"/pip-* "$TMPDIR"/pip_build_* "$PREFIX"/tmp/pip-* 2>/dev/null || true
+        "$tmpd"/pip-* "$tmpd"/pip_build_* 2>/dev/null || true
     info "pip/uv caches cleared"
 
     if command -v apt >/dev/null 2>&1; then
@@ -2370,7 +2401,7 @@ cleanup_stubs() {
     if command -v npm >/dev/null 2>&1; then
         npm cache clean --force >/dev/null 2>&1 || true
     fi
-    rm -rf "$HOME/.npm" "$TMPDIR"/core-* "$TMPDIR"/rish* 2>/dev/null || true
+    rm -rf "$HOME/.npm" "$tmpd"/core-* "$tmpd"/rish* 2>/dev/null || true
     info "npm/core temp stubs cleared"
 
     # Stale .pyc / __pycache__ shipped inside the tool dirs (regenerated on use).
@@ -2380,14 +2411,12 @@ cleanup_stubs() {
 
     local freed_after=0 _left _pyc_left
     if [ "${#_cl[@]}" -gt 0 ]; then
-        _left=$(du -sb "${_cl[@]}" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+        _left=$(du -cb "${_cl[@]}" 2>/dev/null | tail -1 | awk '{print $1}')
         case "$_left" in ''|*[!0-9]*) _left=0 ;; esac
     else
         _left=0
     fi
-    _pyc_left=$(find "$HOME/.local/lib" "$SHIZUKU_DIR" \( -type d -name '__pycache__' -prune \) -o \( -type f -name '*.pyc' -print \) 2>/dev/null \
-        | tr '\n' '\0' | du -sb --files0-from=- 2>/dev/null | tail -1 | awk '{print $1}')
-    case "$_pyc_left" in ''|*[!0-9]*) _pyc_left=0 ;; esac
+    _pyc_left=$(pyc_size)
     freed_after=$((reclaim > _left + _pyc_left ? reclaim - _left - _pyc_left : 0))
     if [ "$reclaim" -gt 0 ]; then
         ok "cleanup freed $(human_size "$freed_after") (estimated $(human_size "$reclaim"))"
