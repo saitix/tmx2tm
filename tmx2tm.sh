@@ -2438,7 +2438,8 @@ main() {
     # skipped, 2 when any selected tool failed (others still ran).
     local tag st
     for tag in "${ALL_COMPONENTS[@]}"; do
-        st="${RESULT[$tag]%%|*}"
+        st="${RESULT[$tag]:-}"
+        st="${st%%|*}"
         if [ "$st" = "failed" ]; then
             exit 2
         fi
