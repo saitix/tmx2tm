@@ -2607,6 +2607,10 @@ main() {
     install_rish
     install_core
     install_kilocode
+    # Post-install sync: tools just installed now have binaries, so ensure
+    # their snippets (the early sync only handled removals + pre-installed).
+    setup_starship_init
+    setup_neofetch_init
     cleanup_stubs
     print_summary
     # Exit code for scripted -y runs: 0 when everything succeeded or was
