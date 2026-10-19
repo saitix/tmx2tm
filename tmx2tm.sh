@@ -14,7 +14,7 @@
 # menu, so `curl ... | bash` would break the TUI.)
 # (Termux has no writable /tmp: use "$TMPDIR" for the download-first form.)
 #
-# Version: 1.0
+# Version: 0.9
 #
 # Installs (selectable via a built-in arrow-key TUI, or non-interactive with -y).
 # Components are grouped and sorted alphabetically, mirroring the menu order:
@@ -114,7 +114,7 @@ cleanup_temps() {
 trap cleanup_temps EXIT INT TERM
 
 # ---------------------------------------------------------------- config ----
-SCRIPT_VERSION="1.0"
+SCRIPT_VERSION="0.9"
 REPO_SHIZUKU="https://github.com/jecis-repos/termux-shizuku-tools.git"
 REPO_CORE_INSTALL="https://raw.githubusercontent.com/DevCoreXOfficial/core-termux/main/install.sh"
 REPO_RISH_INSTALL="https://raw.githubusercontent.com/merbah3266/rish_installer/main/rish_installer.sh"

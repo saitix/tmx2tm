@@ -401,9 +401,9 @@ sshd                      # start the server
 ssh -p 8022 <user>@<device-ip>   # connect from another machine
 pkill sshd                # stop the server
 ```
-**Version: 1.0.** The version is defined once as `$SCRIPT_VERSION` in the
+**Version: 0.9.** The version is defined once as `$SCRIPT_VERSION` in the
 config block, echoed by `-V`/`--version`, shown in the menu title and the
-final summary, and mirrored in the script file header (`Version: 1.0`).
+final summary, and mirrored in the script file header (`Version: 0.9`).
 Bump all of them together if/when changing the script.
 
 ## Notes / limitations
