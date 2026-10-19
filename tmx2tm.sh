@@ -618,8 +618,46 @@ tp_gate() {
 }
 
 # Append a line to ~/.bashrc only if it is not already present.
+# Backup + rewrite helpers for shell startup files (S1): rewriting must never
+# corrupt the file or break symlinks. rc_backup snapshots once per run per
+# file to <file>.tmx2tm.bak; rc_rewrite filters via a temp file, validates
+# with bash -n, then writes back in place (cat >) so symlinks keep working.
+declare -A RC_BACKED_UP=()
+rc_backup() {
+    local f="$1"
+    [ -n "${RC_BACKED_UP[$f]:-}" ] && return 0
+    if [ -e "$f" ]; then
+        cp -p "$f" "$f.tmx2tm.bak" 2>/dev/null \
+            && info "Backed up $f -> $f.tmx2tm.bak"
+    fi
+    RC_BACKED_UP[$f]=1
+}
+# rc_rewrite <file> <filter-function> [args...]: run filter reading the file
+# on stdin and writing the new content on stdout. Refuses to touch the file
+# when the filtered result fails bash -n.
+rc_rewrite() {
+    local f="$1"; shift
+    rc_backup "$f"
+    local tmp
+    tmp=$(mktemp) || { warn "mktemp failed; leaving $f untouched"; return 1; }
+    if "$@" <"$f" >"$tmp" 2>/dev/null; then
+        if bash -n "$tmp" 2>/dev/null; then
+            cat "$tmp" >"$f"
+        else
+            warn "Filtered $f failed syntax check; leaving original untouched"
+            rm -f "$tmp"
+            return 1
+        fi
+    else
+        warn "Filter failed for $f; leaving original untouched"
+        rm -f "$tmp"
+        return 1
+    fi
+    rm -f "$tmp"
+}
 ensure_bashrc_line() {
     local line="$1"
+    rc_backup "$BASHRC"
     if ! grep -qxF "$line" "$BASHRC" 2>/dev/null; then
         printf '\n%s\n' "$line" >> "$BASHRC"
         info "Added to ~/.bashrc: $line"
@@ -1414,10 +1452,18 @@ setup_golang_path() {
 # starship's own init on first eval, so a second sourcing (e.g. zellij reading
 # .bashrc after .bash_profile already ran) is a no-op instead of a
 # double-rendered prompt with double-registered keybindings.
-# Sync rule: binary present -> snippet ensured in both files (old unguarded
-# form upgraded in place); binary missing (user uninstalled) -> snippet
-# removed from both files so shells stay clean. Only touches the files when
-# the installer itself runs under bash ($BASH_VERSION is set only by bash).
+# Filter: drop one starship snippet block (marker + its exact body lines).
+# Reads the file on stdin, writes the result on stdout. Only removes lines
+# when they follow the marker in order, so user `fi` lines survive.
+_starship_strip_filter() {
+    awk '
+        $0 == "# Initialize Starship only once, if installed" { skip=3; next }
+        $0 == "# Initialize Starship only if installed" { skip=3; next }
+        skip > 0 { skip--; next }
+        { print }
+    '
+}
+
 setup_starship_init() {
     if [ -z "${BASH_VERSION:-}" ]; then
         warn "Installer is not running under bash; skipping starship shell init sync"
@@ -1428,15 +1474,11 @@ setup_starship_init() {
     local old_marker='# Initialize Starship only if installed'
     local f
     for f in "$BASH_PROFILE" "$BASHRC"; do
-        # Drop the legacy unguarded snippet (4 lines: marker, if, eval, fi)
-        # wherever it appears so it is replaced by the guarded form below.
-        # shellcheck disable=SC2016  # literal snippet lines, must not expand
+        # Drop the legacy unguarded snippet block so it is replaced by the
+        # guarded form below (block match only; user `fi`s are untouched).
         if [ -f "$f" ] && grep -qxF "$old_marker" "$f" 2>/dev/null; then
-            grep -vxF -e "$old_marker" \
-                      -e 'if command -v starship >/dev/null 2>&1; then' \
-                      -e '    eval "$(starship init bash)"' \
-                      -e 'fi' "$f" >"$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
-            info "Upgraded legacy starship snippet in $f"
+            rc_rewrite "$f" _starship_strip_filter \
+                && info "Upgraded legacy starship snippet in $f"
         fi
     done
 
@@ -1445,17 +1487,15 @@ setup_starship_init() {
         # eval (and its guard) does not linger in new shells.
         local removed=0
         for f in "$BASH_PROFILE" "$BASHRC"; do
-            # shellcheck disable=SC2016  # literal snippet lines, must not expand
             if [ -f "$f" ] && grep -qxF "$marker" "$f" 2>/dev/null; then
-                grep -vxF -e "$marker" \
-                          -e 'if [ -z "$STARSHIP_START_TIME" ] && command -v starship >/dev/null 2>&1; then' \
-                          -e '    eval "$(starship init bash)"' \
-                          -e 'fi' "$f" >"$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
-                info "Removed starship init from $f (starship not installed)"
+                rc_rewrite "$f" _starship_strip_filter \
+                    && info "Removed starship init from $f (starship not installed)"
                 removed=1
             fi
         done
-        [ "$removed" -eq 0 ] && info "Starship not installed; nothing to clean up"
+        if [ "$removed" -eq 0 ]; then
+            info "Starship not installed; nothing to clean up"
+        fi
         return 0
     fi
 
@@ -1464,6 +1504,7 @@ setup_starship_init() {
             info "Starship init already present in $f"
             continue
         fi
+        rc_backup "$f"
         {
             printf '\n%s\n' "$marker"
             # shellcheck disable=SC2016  # literal snippet for the rc files, must not expand
@@ -1477,7 +1518,6 @@ setup_starship_init() {
     ok "starship -> $(command -v starship)"
 }
 
-# Neofetch auto-run snippet, kept in sync in ~/.bash_profile AND ~/.bashrc on
 # Neofetch auto-run snippet, kept in sync in ~/.bash_profile ONLY (not
 # ~/.bashrc: zellij sources .bashrc for every pane/tab, so a .bashrc copy
 # would re-run neofetch on each new tab; .bash_profile runs once per login
@@ -1486,6 +1526,40 @@ setup_starship_init() {
 # ensured; binary missing -> snippet removed (from .bash_profile AND any
 # stale copy in .bashrc). Also repairs the legacy variant found in the wild,
 # which lacks the closing `fi`.
+# Filter: drop the neofetch block only when start AND end markers match.
+# An unclosed legacy block drops just the start marker plus the known snippet
+# lines (if/neofetch/fi), leaving unrelated user lines after it intact.
+_neofetch_strip_filter() {
+    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' '
+        function flush(legacy,   i, start) {
+            # legacy=1: drop the start marker plus leading known-snippet
+            # lines, keep any unrelated lines after them. legacy=0 (block
+            # too long to be ours): keep everything untouched.
+            if (!legacy) { print s; for (i=0;i<n;i++) print buf[i]; inb=0; n=0; return }
+            start = 0
+            while (start < n && (buf[start] ~ /^if / || buf[start] ~ /neofetch/ || buf[start] == "fi" || buf[start] ~ /NEOFETCH_SHOWN/)) start++
+            for (i=start;i<n;i++) print buf[i]
+            inb=0; n=0
+        }
+        $0 == s { inb=1; n=0; next }
+        inb {
+            buf[n++]=$0
+            if ($0 == e) {
+                if (n <= 8) { inb=0; n=0; next }  # closed block: drop it
+                flush(0); next
+            }
+            if (n > 4) { flush(1); next }  # past snippet lines, no end: legacy
+            next
+        }
+        { print }
+        END { if (inb) flush(1) }
+    '
+}
+_neofetch_has_closed_block() {
+    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' \
+        '$0==s{inb=1; hasfi=0; next} inb&&$0=="fi"{hasfi=1} $0==e{if(hasfi)ok=1; inb=0} END{exit !ok}' \
+        "$1" 2>/dev/null
+}
 setup_neofetch_init() {
     if [ -z "${BASH_VERSION:-}" ]; then
         warn "Installer is not running under bash; skipping neofetch shell init sync"
@@ -1495,39 +1569,36 @@ setup_neofetch_init() {
     local start_marker='# >>> neofetch on Termux start >>>'
     local end_marker='# <<< neofetch on Termux start <<<'
     local f removed=0
-    # Strip any existing neofetch block (closed or legacy unclosed form) via
-    # an awk range from the start marker to the end marker.
-    _strip_neofetch_block() {
-        [ -f "$1" ] || return 1
-        grep -qxF "$start_marker" "$1" 2>/dev/null || return 1
-        awk -v s="$start_marker" -v e="$end_marker" \
-            '$0==s{skip=1; next} skip&&$0==e{skip=0; next} !skip' \
-            "$1" >"$1.tmp" 2>/dev/null && mv "$1.tmp" "$1"
-    }
 
     if ! command -v neofetch >/dev/null 2>&1; then
         for f in "$BASH_PROFILE" "$BASHRC"; do
-            if _strip_neofetch_block "$f"; then
-                info "Removed neofetch init from $f (neofetch not installed)"
+            if [ -f "$f" ] && grep -qxF "$start_marker" "$f" 2>/dev/null; then
+                rc_rewrite "$f" _neofetch_strip_filter \
+                    && info "Removed neofetch init from $f (neofetch not installed)"
                 removed=1
             fi
         done
-        [ "$removed" -eq 0 ] && info "Neofetch not installed; nothing to clean up"
+        if [ "$removed" -eq 0 ]; then
+            info "Neofetch not installed; nothing to clean up"
+        fi
         return 0
     fi
 
     # Drop any stale copy in .bashrc: profile-only from now on.
-    if _strip_neofetch_block "$BASHRC" 2>/dev/null; then
-        info "Removed stale neofetch init from $BASHRC (profile-only now)"
+    if [ -f "$BASHRC" ] && grep -qxF "$start_marker" "$BASHRC" 2>/dev/null; then
+        rc_rewrite "$BASHRC" _neofetch_strip_filter \
+            && info "Removed stale neofetch init from $BASHRC (profile-only now)"
     fi
 
     f="$BASH_PROFILE"
-    if awk -v s="$start_marker" -v e="$end_marker" \
-        '$0==s{inb=1; hasfi=0; next} inb&&$0=="fi"{hasfi=1} $0==e{if(hasfi)ok=1; inb=0} END{exit !ok}' \
-        "$f" 2>/dev/null; then
+    if _neofetch_has_closed_block "$f"; then
         info "Neofetch init already present in $f"
     else
-        _strip_neofetch_block "$f" 2>/dev/null || true
+        if [ -f "$f" ] && grep -qxF "$start_marker" "$f" 2>/dev/null; then
+            rc_rewrite "$f" _neofetch_strip_filter || true
+        else
+            rc_backup "$f"
+        fi
         [ -e "$f" ] || : >"$f"
         {
             printf '\n%s\n' "$start_marker"
