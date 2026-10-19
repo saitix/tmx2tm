@@ -29,7 +29,9 @@ Minimal instructions for agents working in this repo.
    - `COMP_HINT[<tag>]` summary-hint (what to run after install)
    - `README.md` pkg-tools table row + any stage-specific section
 4. **Verify before committing:** run `bash -n tmx2tm.sh`
-   (syntax) and `shellcheck tmx2tm.sh` (lint; must be clean).
+   (syntax), `shellcheck tmx2tm.sh` (lint; must be clean), and `bats tests/`
+   (rc-file filter regression tests). Any change to an rc-file filter needs
+   a matching test case.
 5. **`.bashrc` rule.** Never append blindly — always use the existing
    `ensure_bashrc_line` helper so re-runs stay idempotent.
    - `setup_starship_init` is the exception pattern: it syncs the guarded
@@ -71,9 +73,9 @@ Minimal instructions for agents working in this repo.
      directly outside the probe functions.
    - 3rd-party probes live in `probe_tp_one` (pip via `pip index versions`,
      git via `ls-remote` + archived API check); `probe_tp_status` runs them
-     in parallel. Every network call needs a `--max-time` / `timeout` cap
-     (curl: `--max-time` + `--connect-timeout`; git: `timeout` +
-     `GIT_TERMINAL_PROMPT=0`; pip: `--timeout` + `timeout`).
+     in parallel. Every network call must use one of the named timeout
+     variables in the config block (`NET_*`, `GIT_*`, `PIP_*`, `PYPI_*`,
+     `GH_*`, `DOWNLOAD_*`) — add a new variable rather than a literal.
    - `check_connectivity` MUST run before any network probe (menu, refresh,
      non-menu flow). Red verdicts require reachability: offline means
      installed→current, missing→missing — never broken. Gate new red logic

@@ -209,7 +209,7 @@ Upstream sources used by the git/core/rish stages:
 |-------------|-----------------------------------------------------|
 | Up / Down (or k / j) | move the cursor                          |
 | Space       | toggle the highlighted item                         |
-| a           | toggle every item                                   |
+| a           | toggle all eligible (skips installed/broken)        |
 | s           | save a kilocode backup (see below), stay in the menu |
 | u           | update what is already installed (see below)        |
 | p           | install prerequisites, then reload the menu (fresh Termux) |
@@ -218,6 +218,12 @@ Upstream sources used by the git/core/rish stages:
 
 In the TUI the shortcut keys are rendered in bold white (Up, Down, Space, a,
 s, u, p, Enter, q) next to their dim descriptions so they stand out.
+
+The `a` key ticks only rows that need action (missing/yellow tools plus
+options that are on); green (installed) and red (broken source) rows are left
+alone, so a bulk key never triggers mass reinstalls. Pressing `a` again
+clears every row. A green row can still be ticked individually with Space (or
+its number in the text menu) to force a reinstall.
 
 The `p` key appears only when base prerequisites are missing (fresh Termux:
 the status probes run degraded without `git`/`pip`/`tput`). It installs the
@@ -245,8 +251,15 @@ as `[link target missing]`; selecting it removes the stale link and runs the
 official installer, which re-links correctly. Installed pip tools compare `pip show`
 against `pip index versions`; the shizuku clone compares local HEAD with the
 remote; core/kilocode/rish count as installed when their binaries exist. The
-probes run in parallel in the background (about a second for all tools) with
-a purple "please wait" notice while they run.
+probes run in parallel in the background (about a second for all tools on a
+normal network) with a purple "please wait" notice while they run. On a very
+slow network the menu can take up to ~45 s (bounded by the git probe plus the
+GitHub API check); timeouts are generous so slow-but-alive sources are not
+marked broken. All network timeouts live as named variables next to
+`SCRIPT_VERSION` at the top of the script (`NET_CHECK_TIMEOUT`,
+`NET_CONNECT_TIMEOUT`, `GIT_PROBE_TIMEOUT`, `GH_API_TIMEOUT`,
+`PIP_INDEX_TIMEOUT`, `PIP_NET_TIMEOUT`, `PYPI_PROBE_TIMEOUT`,
+`DOWNLOAD_TIMEOUT`).
 
 Before probing, the installer checks connectivity to the three source
 families (GitHub, PyPI, and the configured apt mirror) and prints the result
@@ -422,8 +435,10 @@ Bump all of them together if/when changing the script.
 - On a fresh Termux without `git`/`pip` yet, the status probes degrade to
   presence-only verdicts (installed = green, missing = dim, never red);
   full version/source checks activate once the base dependencies are in.
-- `apt update` / `apt upgrade` / `pkg install` may print warnings; these are
-  non-fatal (the installer warns and keeps going).
+- `apt update` / per-tool `pkg install` warnings are non-fatal (the installer
+  records the failure and keeps going, exiting 2 at the end). A
+  base-dependency failure aborts the run instead: every later stage needs
+  those packages, so there is nothing useful to continue with.
 - The "rust" pkg tool (rust + binutils) is large (~640 MB installed). It is
   needed because shizuku's `setup.sh` compiles jiter and pydantic-core from
   source (no Android wheels); building them takes several minutes on-device.
@@ -433,3 +448,17 @@ Bump all of them together if/when changing the script.
   run's backup). Rewrites are validated with `bash -n` first and written back
   in place, so symlinked dotfiles stay symlinks. To undo: `cp
   ~/.bashrc.tmx2tm.bak ~/.bashrc` (same for `.bash_profile`).
+
+## Tests
+
+Regression tests for the shell-startup-file editing live in `tests/`
+(`bats` + `tests/helpers.bash` load the filters from `tmx2tm.sh` without
+running the installer). Install bats-core — `pkg install bats` where
+available, `npm i -g bats` otherwise, or build from
+<https://github.com/bats-core/bats-core> — then run:
+
+```bash
+bats tests/
+```
+
+Tests run on any Linux; no Termux needed.
