@@ -1556,15 +1556,41 @@ setup_golang_path() {
 # .bashrc after .bash_profile already ran) is a no-op instead of a
 # double-rendered prompt with double-registered keybindings.
 # Filter: drop one starship snippet block (marker + its exact body lines).
-# Reads the file on stdin, writes the result on stdout. Only removes lines
-# when they follow the marker in order, so user `fi` lines survive.
+# Reads the file on stdin, writes the result on stdout.
+# After a marker, expected body lines are consumed ONE AT A TIME and only on
+# exact match; at the first non-matching line, consumption stops and that line
+# (plus everything after) prints unchanged — user lines after an edited
+# snippet always survive. A partial block (marker + some matched lines but no
+# `fi`) drops just the matched lines: the marker proves the installer wrote
+# them, and a lone `if` without its `fi` can never be user code worth keeping.
+# A blank line immediately before a dropped marker goes with it, so add/remove
+# cycles do not accumulate blank lines.
 # shellcheck disable=SC2329  # invoked via rc_rewrite
 _starship_strip_filter() {
     awk '
-        $0 == "# Initialize Starship only once, if installed" { skip=3; next }
-        $0 == "# Initialize Starship only if installed" { skip=3; next }
-        skip > 0 { skip--; next }
-        { print }
+        function is_body(line) {
+            return (line == "if [ -z \"$STARSHIP_START_TIME\" ] && command -v starship >/dev/null 2>&1; then" \
+                || line == "if command -v starship >/dev/null 2>&1; then" \
+                || line == "    eval \"$(starship init bash)\"" \
+                || line == "fi")
+        }
+        $0 == "# Initialize Starship only once, if installed" || $0 == "# Initialize Starship only if installed" {
+            inb=1; n=0; have_blank=0; next
+        }
+        inb {
+            if (is_body($0)) {
+                if ($0 == "fi") { inb=0; n=0; next }
+                next
+            }
+            # Non-body line: partial block ends here — matched lines already
+            # dropped, so just print this line and resume normal output.
+            inb=0; n=0
+            print
+            next
+        }
+        /^[[:space:]]*$/ { have_blank=1; next }
+        { if (have_blank) { print ""; have_blank=0 } print }
+        END { if (!inb && have_blank) print "" }
     '
 }
 
@@ -1630,39 +1656,46 @@ setup_starship_init() {
 # ensured; binary missing -> snippet removed (from .bash_profile AND any
 # stale copy in .bashrc). Also repairs the legacy variant found in the wild,
 # which lacks the closing `fi`.
-# Filter: drop the neofetch block only when start AND end markers match.
-# An unclosed legacy block drops just the start marker plus the known snippet
-# lines (if/neofetch/fi), leaving unrelated user lines after it intact.
+# Filter: drop the neofetch block as one unit whenever start AND end markers
+# match (body length up to NEOFETCH_BLOCK_CAP lines, to avoid swallowing a
+# file where the end marker belongs to something far away; beyond the cap the
+# file is left untouched). Only when NO end marker follows does the legacy
+# fallback apply: drop the start marker plus known snippet lines
+# (if/neofetch/fi/NEOFETCH_SHOWN), stopping at the first unrelated line.
 # shellcheck disable=SC2329  # invoked via rc_rewrite
 _neofetch_strip_filter() {
     awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' '
-        function flush(legacy,   i, start) {
-            # legacy=1: drop the start marker plus leading known-snippet
-            # lines, keep any unrelated lines after them. legacy=0 (block
-            # too long to be ours): keep everything untouched.
-            if (!legacy) { print s; for (i=0;i<n;i++) print buf[i]; inb=0; n=0; return }
+        function is_snippet(line) {
+            return (line ~ /^if .*neofetch/ || line ~ /neofetch --off/ \
+                || line == "fi" || line ~ /NEOFETCH_SHOWN/ || line == "neofetch")
+        }
+        function flush_legacy(   i, start) {
             start = 0
-            while (start < n && (buf[start] ~ /^if / || buf[start] ~ /neofetch/ || buf[start] == "fi" || buf[start] ~ /NEOFETCH_SHOWN/)) start++
+            while (start < n && is_snippet(buf[start])) start++
             for (i=start;i<n;i++) print buf[i]
             inb=0; n=0
+        }
+        function flush_far(   i) {
+            # End marker too far: not our block — keep everything.
+            print s; for (i=0;i<n;i++) print buf[i]; inb=0; n=0
         }
         $0 == s { inb=1; n=0; next }
         inb {
             buf[n++]=$0
             if ($0 == e) {
-                if (n <= 8) { inb=0; n=0; next }  # closed block: drop it
-                flush(0); next
+                if (n <= 21) { inb=0; n=0; next }  # closed block: drop it
+                flush_far(); next
             }
-            if (n > 4) { flush(1); next }  # past snippet lines, no end: legacy
+            if (n > 21) { flush_far(); next }
             next
         }
         { print }
-        END { if (inb) flush(1) }
+        END { if (inb) flush_legacy() }
     '
 }
 _neofetch_has_closed_block() {
-    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' \
-        '$0==s{inb=1; hasfi=0; next} inb&&$0=="fi"{hasfi=1} $0==e{if(hasfi)ok=1; inb=0} END{exit !ok}' \
+    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' '
+        $0==s{inb=1; n=0; next} inb{n++; if($0==e){if(n<=21)ok=1; inb=0}} END{exit !ok}' \
         "$1" 2>/dev/null
 }
 setup_neofetch_init() {
