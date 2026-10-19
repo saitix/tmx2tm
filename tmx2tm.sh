@@ -6,11 +6,13 @@
 # Run directly from git (downloads the script to a temp file, then runs it
 # with your own shell, so all flags work and stdin stays usable):
 #
-#   curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o /tmp/tmx2tm.sh && bash /tmp/tmx2tm.sh
-#   curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o /tmp/tmx2tm.sh && bash /tmp/tmx2tm.sh -y
+#   bash <(curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh)
+#   curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o "$TMPDIR/tmx2tm.sh" && bash "$TMPDIR/tmx2tm.sh"
+#   curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o "$TMPDIR/tmx2tm.sh" && bash "$TMPDIR/tmx2tm.sh" -y
 #
 # (Do NOT pipe curl into bash: the script reads stdin for its interactive
 # menu, so `curl ... | bash` would break the TUI.)
+# (Termux has no writable /tmp: use "$TMPDIR" for the download-first form.)
 #
 # Version: 0.9
 #
@@ -93,6 +95,22 @@ ok()   { printf '    %s[ok]%s %s\n' "$C_OK" "$C_RESET" "$1"; }
 warn() { printf '    %s[!]%s %s\n' "$C_WARN" "$C_RESET" "$1"; }
 die()  { printf '\n%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
 done_step() { printf '\n%s==>%s %s%s%s\n' "$C_OK" "$C_RESET" "$C_OK" "$1" "$C_RESET"; }
+
+# Temp registry + exit trap (task 6): every mktemp path registers here so
+# Ctrl-C / errors never leave temp dirs behind or a hidden cursor. Cleanup
+# runs only in the main shell (BASHPID check) so background probe jobs that
+# inherit the trap do not wipe paths out from under each other.
+declare -a TEMP_PATHS=()
+MAIN_PID=$$
+register_temp() { TEMP_PATHS+=("$1"); }
+cleanup_temps() {
+    [ "$BASHPID" = "$MAIN_PID" ] || return 0
+    local p
+    for p in "${TEMP_PATHS[@]}"; do [ -e "$p" ] && rm -rf "$p" 2>/dev/null; done
+    tput cnorm 2>/dev/null || true
+    printf '%s' "$C_RESET"
+}
+trap cleanup_temps EXIT INT TERM
 
 # ---------------------------------------------------------------- config ----
 SCRIPT_VERSION="0.9"
@@ -225,6 +243,31 @@ RESTORE_KILO=0
 KILO_SAVE_PATH="$DEFAULT_KILO_BACKUP"
 KILO_RESTORE_PATH="$DEFAULT_KILO_BACKUP"
 
+# usage() is the source of truth for --help (works under bash <(...) where
+# $0 is an unreadable pipe). Keep the header comment's Usage list in sync.
+usage() {
+    cat <<'USAGE'
+tmx2tm.sh - Fresh-install installer for a new Termux instance.
+
+Run directly from git:
+  bash <(curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh)
+  curl -fsSL https://raw.githubusercontent.com/saitix/tmx2tm/main/tmx2tm.sh -o "$TMPDIR/tmx2tm.sh" && bash "$TMPDIR/tmx2tm.sh"
+
+Usage:
+  bash tmx2tm.sh                 # interactive arrow-key menu
+  bash tmx2tm.sh -y              # non-interactive: install everything
+  bash tmx2tm.sh --no-storage    # skip termux-setup-storage prompt
+  bash tmx2tm.sh --no-apt-upgrade    # skip the apt update/upgrade + repo check
+  bash tmx2tm.sh --cleanup           # remove install stubs + caches after installing
+  bash tmx2tm.sh --kilocode-native   # kilocode: auto-pick recommended glibc method
+  bash tmx2tm.sh --menu          # force the menu even next to other flags
+  bash tmx2tm.sh --save-kilo[=PATH]      # back up current Kilo settings + tokens (default ~/.kilo-backup.tar.gz)
+  bash tmx2tm.sh --restore-kilo[=PATH]   # restore Kilo settings, then install
+  bash tmx2tm.sh -V              # print the version
+  bash tmx2tm.sh --help
+USAGE
+}
+
 for arg in "$@"; do
     case "$arg" in
         --no-storage)       SETUP_STORAGE=0 ;;
@@ -238,7 +281,7 @@ for arg in "$@"; do
         --restore-kilo)     RESTORE_KILO=1 ;;
         --restore-kilo=*)   RESTORE_KILO=1; KILO_RESTORE_PATH="${arg#*=}" ;;
         -h|--help)
-            sed -n '2,/^set -uo pipefail/{/^set -uo pipefail/d;p;}' "$0"
+            usage
             exit 0
             ;;
         -V|--version)
@@ -372,6 +415,7 @@ check_connectivity() {
     NET_GITHUB=0; NET_PYPI=0; NET_PKG=0
     local tmpnet mirror
     tmpnet=$(mktemp -d 2>/dev/null) || return 0
+    register_temp "$tmpnet"
     ( curl -fsSL --max-time 5 -o /dev/null https://github.com >/dev/null 2>&1 \
         && echo 1 >"$tmpnet/gh" || echo 0 >"$tmpnet/gh" ) &
     ( curl -fsSL --max-time 5 -o /dev/null https://pypi.org/simple/ >/dev/null 2>&1 \
@@ -430,10 +474,10 @@ tp_installed() {
 # skips the archived check instead of crying wolf — reachability already
 # covered the offline case.
 tp_git_repo_state() {
-    git ls-remote "https://github.com/$1.git" HEAD >/dev/null 2>&1 \
+    GIT_TERMINAL_PROMPT=0 timeout 10 git ls-remote "https://github.com/$1.git" HEAD >/dev/null 2>&1 \
         || { echo unreachable; return; }
     local archived
-    archived=$(curl -fsSL --max-time 8 "https://api.github.com/repos/$1" 2>/dev/null \
+    archived=$(curl -fsSL --max-time 8 --connect-timeout 5 "https://api.github.com/repos/$1" 2>/dev/null \
         | grep -o '"archived": *[a-z]*' | awk '{print $2}')
     if [ "$archived" = "true" ]; then echo archived; else echo ok; fi
 }
@@ -453,7 +497,7 @@ tp_probe_pip() {
     fi
     local inst latest
     inst=$(pip show "$pkg" 2>/dev/null | awk '/^Version: /{print $2; exit}')
-    latest=$(pip index versions "$pkg" 2>/dev/null \
+    latest=$(timeout 15 pip index versions --timeout 8 --retries 0 "$pkg" 2>/dev/null \
         | sed -n 's/^Available versions: //p' | cut -d, -f1 | tr -d ' ')
     if [ -n "$latest" ]; then
         if [ -n "$inst" ] && [ "$inst" = "$latest" ]; then
@@ -469,7 +513,7 @@ tp_probe_pip() {
         printf 'current\n\n'
         return
     fi
-    if curl -fsSL --max-time 8 "https://pypi.org/simple/$pkg/" >/dev/null 2>&1; then
+    if curl -fsSL --max-time 8 --connect-timeout 5 "https://pypi.org/simple/$pkg/" >/dev/null 2>&1; then
         printf 'current\n\n'
     else
         printf 'broken\nnot on PyPI\n'
@@ -512,7 +556,7 @@ tp_probe_git() {
             printf 'current\n\n'
             return
         fi
-        remote_head=$(git ls-remote "https://github.com/$repo.git" HEAD 2>/dev/null | awk '{print $1}')
+        remote_head=$(GIT_TERMINAL_PROMPT=0 timeout 10 git ls-remote "https://github.com/$repo.git" HEAD 2>/dev/null | awk '{print $1}')
         if [ -z "$remote_head" ]; then
             printf 'broken\nsource unreachable\n'
             return
@@ -572,6 +616,7 @@ probe_tp_status() {
     TP_BROKEN_WHY=()
     local tmpdir c
     tmpdir=$(mktemp -d 2>/dev/null) || { warn "Cannot create temp dir for probe"; return 1; }
+    register_temp "$tmpdir"
     for c in "${THIRD_PARTY_COMPONENTS[@]}"; do
         ( probe_tp_one "$c" >"$tmpdir/$c" 2>/dev/null ) &
     done
@@ -689,11 +734,20 @@ ensure_bashrc_line() {
 # lines: an ANSI style applied to the whole "key description" line instead of
 # the default (bold-white key + dim description). Used to make one shortcut
 # stand out (e.g. the prerequisites installer in bold white).
+# TUI_EXTRA_STREAM is an optional parallel array: 1 = run the action live on
+# the terminal (for long actions like update/prereqs), 0/empty = capture and
+# print when done (for short actions like save). Streamed actions run in a
+# subshell so their variable changes do not leak into the menu state.
+# Refresh-hook contract (TUI_REFRESH_FN): the hook runs in the menu's scope
+# and may read/write these tui_checklist locals: n, kinds, tags, descs,
+# states. It may also modify TUI_EXTRA_* to add/drop shortcuts; after it
+# returns, `extra` and `lines` are recomputed before the redraw.
 TUI_EXTRA_KEYS=()
 TUI_EXTRA_DESCS=()
 TUI_EXTRA_BUSY=()
 TUI_EXTRA_FNS=()
 TUI_EXTRA_STYLE=()
+TUI_EXTRA_STREAM=()
 TUI_ITEM_COLOR=()
 TUI_REFRESH_FN=""
 TUI_LEGEND=""
@@ -727,9 +781,9 @@ tui_checklist() {
     while [ "$cur" -lt "$n" ] && [ "${kinds[$cur]}" = sep ]; do cur=$((cur + 1)); done
     if [ "$cur" -ge "$n" ]; then printf -v "$result_var" '%s' ""; return 0; fi
     local extra=${#TUI_EXTRA_KEYS[@]}
-    local legend_lines=0
+    local legend_lines=0 lines=0
     [ -n "${TUI_LEGEND:-}" ] && legend_lines=1
-    local lines=$((n + 3 + extra + legend_lines))   # title + items + 2 help lines (+ legend + one per extra key)
+    lines=$((n + 3 + extra + legend_lines))   # title + items + 2 help lines (+ legend + one per extra key)
     local i
 
     # Terminal width. Truncate every rendered line to fit so that nothing
@@ -854,27 +908,47 @@ tui_checklist() {
                     [ "${kinds[$i]}" = item ] || continue
                     [ "${states[$i]}" = on ] && on_tags+="${tags[$i]} "
                 done
-                local out ol
-                # Show an immediate notice: the action's own output is captured
-                # below, so without this a slow action looks like a frozen menu.
-                local busy="${TUI_EXTRA_BUSY[$action]:-Working, please wait...}"
-                _tui_fit busy
-                printf '%s%s%s\033[K\n' "$C_PURPLE" "$busy" "$C_RESET"
-                out=$(TUI_ON_TAGS="${on_tags% }" "${TUI_EXTRA_FNS[$action]}" 2>&1)
-                printf '\033[1A\033[2K'   # erase the notice again
-                tput cnorm 2>/dev/null || true
-                _tui_clear
-                printf '%s\n' "$out"
-                ol=$(printf '%s\n' "$out" | wc -l)
-                printf '  %sPress any key to return...%s' "$C_DIM" "$C_RESET"
-                IFS= read -rsn1 _ || true
-                printf '\033[%dA\033[J' "$((ol + 1))"
-                tput civis 2>/dev/null || true
+                local stream=0
+                [ "${#TUI_EXTRA_STREAM[@]}" -gt "$action" ] && stream="${TUI_EXTRA_STREAM[$action]}"
+                if [ "$stream" = "1" ]; then
+                    # Long action: stream live below the menu so prompts and
+                    # progress are visible, then full-clear and redraw.
+                    tput cnorm 2>/dev/null || true
+                    _tui_clear
+                    ( TUI_ON_TAGS="${on_tags% }" "${TUI_EXTRA_FNS[$action]}" )
+                    printf '  %sPress any key to return...%s' "$C_DIM" "$C_RESET"
+                    IFS= read -rsn1 _ || true
+                    clear 2>/dev/null || printf '\033[2J\033[H'
+                    tput civis 2>/dev/null || true
+                else
+                    local out ol
+                    # Show an immediate notice: the action's own output is captured
+                    # below, so without this a slow action looks like a frozen menu.
+                    local busy="${TUI_EXTRA_BUSY[$action]:-Working, please wait...}"
+                    _tui_fit busy
+                    printf '%s%s%s\033[K\n' "$C_PURPLE" "$busy" "$C_RESET"
+                    out=$(TUI_ON_TAGS="${on_tags% }" "${TUI_EXTRA_FNS[$action]}" 2>&1)
+                    printf '\033[1A\033[2K'   # erase the notice again
+                    tput cnorm 2>/dev/null || true
+                    _tui_clear
+                    printf '%s\n' "$out"
+                    ol=$(printf '%s\n' "$out" | wc -l)
+                    printf '  %sPress any key to return...%s' "$C_DIM" "$C_RESET"
+                    IFS= read -rsn1 _ || true
+                    printf '\033[%dA\033[J' "$((ol + 1))"
+                    tput civis 2>/dev/null || true
+                fi
                 # Let the caller refresh per-item state (e.g. pkg status colors
                 # after the 'u' update action) before the menu redraws.
                 if [ -n "$TUI_REFRESH_FN" ]; then
                     "$TUI_REFRESH_FN"
                 fi
+                # The refresh may have added/dropped shortcuts: recompute the
+                # redraw height before rendering again.
+                extra=${#TUI_EXTRA_KEYS[@]}
+                legend_lines=0
+                [ -n "${TUI_LEGEND:-}" ] && legend_lines=1
+                lines=$((n + 3 + extra + legend_lines))
                 _tui_render
                 continue
             fi
@@ -939,8 +1013,9 @@ menu_update_tools() {
     for c in ${TUI_ON_TAGS:-}; do on[$c]=1; done
 
     step "Updating pkg packages (pkg update && pkg upgrade)"
-    pkg update -y  || warn "pkg update reported errors; continuing"
-    pkg upgrade -y || warn "pkg upgrade reported errors; continuing"
+    DEBIAN_FRONTEND=noninteractive pkg update -y || warn "pkg update reported errors; continuing"
+    DEBIAN_FRONTEND=noninteractive pkg upgrade -y -o Dpkg::Options::="--force-confold" \
+        || warn "pkg upgrade reported errors; continuing"
     ok "pkg packages updated"
 
     step "Updating selected 3rd-party tools"
@@ -989,8 +1064,9 @@ menu_update_tools() {
         any=1
         local tmp
         tmp=$(mktemp) || tmp=""
+        [ -n "$tmp" ] && register_temp "$tmp"
         # Force the non-interactive path: the output is captured below this menu.
-        if [ -n "$tmp" ] && curl -fsSL "$REPO_RISH_INSTALL" -o "$tmp" \
+        if [ -n "$tmp" ] && curl -fsSL --max-time 60 --connect-timeout 10 "$REPO_RISH_INSTALL" -o "$tmp" \
            && bash "$tmp" --reinstall --silent --source default; then
             ok "rish updated"
         else
@@ -1040,14 +1116,30 @@ refresh_menu_colors() {
 }
 
 # Re-probe all statuses and rebuild row colors, suffixes, and toggles. Wired
-# as TUI_REFRESH_FN so the menu refreshes right after the 'u' action without
+# as TUI_REFRESH_FN so the menu refreshes right after an action without
 # leaving it. Green tools go off (nothing to do), broken tools go off
 # (nothing can be done); missing/yellow rows keep the user's toggle.
+# Refresh-hook contract (see the TUI_EXTRA_STREAM comment): this runs in
+# tui_checklist's scope and may read/write n, kinds, tags, descs, states,
+# plus the TUI_EXTRA_* arrays; tui_checklist recomputes extra/lines after.
 refresh_menu_status() {
     check_connectivity
     probe_pkg_status
     probe_tp_status
     refresh_menu_colors
+    # Prerequisites now present: drop the 'p' shortcut (it did its job).
+    if ! prereqs_missing; then
+        local ni nk=() nd=() nb=() nf=() ns=() nt=()
+        for ((ni = 0; ni < ${#TUI_EXTRA_KEYS[@]}; ni++)); do
+            [ "${TUI_EXTRA_KEYS[$ni]}" = "p" ] && continue
+            nk+=("${TUI_EXTRA_KEYS[$ni]}"); nd+=("${TUI_EXTRA_DESCS[$ni]}")
+            nb+=("${TUI_EXTRA_BUSY[$ni]}"); nf+=("${TUI_EXTRA_FNS[$ni]}")
+            ns+=("${TUI_EXTRA_STYLE[$ni]}"); nt+=("${TUI_EXTRA_STREAM[$ni]:-0}")
+        done
+        TUI_EXTRA_KEYS=("${nk[@]}"); TUI_EXTRA_DESCS=("${nd[@]}")
+        TUI_EXTRA_BUSY=("${nb[@]}"); TUI_EXTRA_FNS=("${nf[@]}")
+        TUI_EXTRA_STYLE=("${ns[@]}"); TUI_EXTRA_STREAM=("${nt[@]}")
+    fi
     local i st
     for ((i = 0; i < n; i++)); do
         [ "${kinds[$i]}" = item ] || continue
@@ -1107,6 +1199,7 @@ show_menu() {
                     "Updating installed tools; this can take several minutes...")
     TUI_EXTRA_FNS=("menu_save_kilo" "menu_update_tools")
     TUI_EXTRA_STYLE=("" "")
+    TUI_EXTRA_STREAM=(0 1)
     if prereqs_missing; then
         TUI_EXTRA_KEYS+=("p")
         TUI_EXTRA_DESCS+=("install prerequisites (recommended on fresh Termux)")
@@ -1115,6 +1208,7 @@ show_menu() {
         # The prerequisites shortcut is the important one on a fresh Termux:
         # render the whole line in bold white so it stands out.
         TUI_EXTRA_STYLE+=("$C_KEY")
+        TUI_EXTRA_STREAM+=(1)
     fi
     # Status colors for pkg rows (green = installed+latest, yellow =
     # installed+upgradable, default = missing); refreshed after 'u'.
@@ -1136,7 +1230,7 @@ show_menu() {
         info "Falling back to a plain text menu"
         info "Tip: zoom out / rotate to landscape for more rows, then press 'r' to reload the full menu"
         TUI_EXTRA_KEYS=(); TUI_EXTRA_DESCS=(); TUI_EXTRA_BUSY=(); TUI_EXTRA_FNS=()
-        TUI_EXTRA_STYLE=()
+        TUI_EXTRA_STYLE=(); TUI_EXTRA_STREAM=()
         TUI_ITEM_COLOR=(); TUI_REFRESH_FN=""; TUI_LEGEND=""
         show_text_menu "${items[@]}"
         text_rc=$?
@@ -1159,6 +1253,7 @@ show_menu() {
     TUI_EXTRA_BUSY=()
     TUI_EXTRA_FNS=()
     TUI_EXTRA_STYLE=()
+    TUI_EXTRA_STREAM=()
     TUI_ITEM_COLOR=()
     TUI_REFRESH_FN=""
     TUI_LEGEND=""
@@ -1800,7 +1895,8 @@ install_rish() {
 
     local tmp
     tmp=$(mktemp) || die "mktemp failed"
-    if ! curl -fsSL "$REPO_RISH_INSTALL" -o "$tmp"; then
+    register_temp "$tmp"
+    if ! curl -fsSL --max-time 60 --connect-timeout 10 "$REPO_RISH_INSTALL" -o "$tmp"; then
         rm -f "$tmp"
         die "Failed to download rish_installer.sh"
     fi
@@ -1852,10 +1948,21 @@ install_core() {
     fi
 
     command -v curl >/dev/null 2>&1 || die "curl is required to install core-termux"
+    progress "Downloading official core-termux installer"
+    local tmp
+    tmp=$(mktemp) || die "mktemp failed"
+    register_temp "$tmp"
+    if ! curl -fsSL --max-time 60 --connect-timeout 10 "$REPO_CORE_INSTALL" -o "$tmp" \
+        || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        die "Failed to download core-termux installer"
+    fi
     progress "Running official core-termux installer"
-    if ! curl -fsSL "$REPO_CORE_INSTALL" | bash; then
+    if ! bash "$tmp"; then
+        rm -f "$tmp"
         die "core-termux installer failed"
     fi
+    rm -f "$tmp"
 
     if [ -e "$PREFIX/bin/core" ]; then
         ok "core installed (run: core)"
