@@ -1,6 +1,6 @@
 # tmx2tm.sh
 
-Termux 2 take many. A bundler for packages and 3rd party apps on a termux instalation / or a Fresh-install installer for a new Termux instance
+Termux 2 take many. A bundler for packages and 3rd party apps on a termux installation / or a Fresh-install installer for a new Termux instance
 
 ![tmx2tm.sh v0.9 component menu](https://github.com/user-attachments/assets/fa3f3936-0690-47b5-b54f-cd259f3e4952)
 
@@ -153,18 +153,22 @@ lacks the closing `fi`. Only runs when the installer itself runs under bash.
 | kilocode_native | kilocode: auto-pick the recommended native method (no prompt)       |
 | cleanup         | cleanup install stubs + caches after installing (off by default)    |
 
-The `cleanup` pass runs last and removes only throwaway leftovers from the
-3rd-party stages: pip/uv caches and build dirs, `apt clean` + `autoremove`,
-cargo/go build caches, npm cache, temp downloads (`$TMPDIR`), and stale
-`__pycache__`/`*.pyc` inside the tool dirs. Installed tools are never touched;
-it first prints the estimated reclaimable size, then reports how much was
-actually freed (e.g. `cleanup freed 312.4 MB (estimated 315.1 MB)`).
+The `cleanup` pass runs last and removes exactly these throwaway leftovers:
+pip/uv caches and temp build dirs (`pip-*`, `pip_build_*`), `apt clean`
+archives, the cargo registry + rustup tmp, the go build/test cache (the
+module cache is kept), the npm cache + `~/.npm`, tool-owned temp stubs
+(`core-*`, `rish*`, plus this run's own temp files), and stale
+`__pycache__`/`*.pyc` inside the tool lib dirs. Installed tools, other
+programs' temp files, and go modules are never touched. It first prints the
+estimated reclaimable size, then reports how much was actually freed (e.g.
+`cleanup freed 312.4 MB (estimated 315.1 MB)`). Ticking only `cleanup` in
+the menu runs the pass standalone with no tools selected.
 
 Upstream sources used by the git/core/rish stages:
 
 - termux-shizuku-tools: <https://github.com/jecis-repos/termux-shizuku-tools.git>
 - core-termux: <https://github.com/DevCoreXOfficial/core-termux>
-  (installed via: `curl -fsSL .../main/install.sh | bash`)
+  (downloaded to a temp file first, then run with bash)
 - rish_installer: <https://github.com/merbah3266/rish_installer>
   (installed via: `rish_installer.sh`, see the rish notes below)
 
@@ -372,6 +376,10 @@ Full unattended install of every tool:
 bash tmx2tm.sh -y
 ```
 
+Exit code (useful for scripted `-y` runs): `0` when everything selected
+succeeded or was skipped as already-installed; `2` when any tool failed
+(the other stages still ran — see the Failed group in the summary).
+
 ## After install
 
 ```bash
@@ -393,9 +401,9 @@ sshd                      # start the server
 ssh -p 8022 <user>@<device-ip>   # connect from another machine
 pkill sshd                # stop the server
 ```
-**Version: 0.9.** The version is defined once as `$SCRIPT_VERSION` in the
+**Version: 1.0.** The version is defined once as `$SCRIPT_VERSION` in the
 config block, echoed by `-V`/`--version`, shown in the menu title and the
-final summary, and mirrored in the script file header (`Version: 0.9`).
+final summary, and mirrored in the script file header (`Version: 1.0`).
 Bump all of them together if/when changing the script.
 
 ## Notes / limitations
@@ -420,3 +428,8 @@ Bump all of them together if/when changing the script.
   needed because shizuku's `setup.sh` compiles jiter and pydantic-core from
   source (no Android wheels); building them takes several minutes on-device.
 - Re-running is safe; edits you make to `~/.bashrc` are only appended once.
+- Before any rewrite of `~/.bashrc` / `~/.bash_profile`, the installer backs
+  the file up once per run to `<file>.tmx2tm.bak` (overwriting the previous
+  run's backup). Rewrites are validated with `bash -n` first and written back
+  in place, so symlinked dotfiles stay symlinks. To undo: `cp
+  ~/.bashrc.tmx2tm.bak ~/.bashrc` (same for `.bash_profile`).

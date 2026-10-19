@@ -14,7 +14,7 @@
 # menu, so `curl ... | bash` would break the TUI.)
 # (Termux has no writable /tmp: use "$TMPDIR" for the download-first form.)
 #
-# Version: 0.9
+# Version: 1.0
 #
 # Installs (selectable via a built-in arrow-key TUI, or non-interactive with -y).
 # Components are grouped and sorted alphabetically, mirroring the menu order:
@@ -114,7 +114,7 @@ cleanup_temps() {
 trap cleanup_temps EXIT INT TERM
 
 # ---------------------------------------------------------------- config ----
-SCRIPT_VERSION="0.9"
+SCRIPT_VERSION="1.0"
 REPO_SHIZUKU="https://github.com/jecis-repos/termux-shizuku-tools.git"
 REPO_CORE_INSTALL="https://raw.githubusercontent.com/DevCoreXOfficial/core-termux/main/install.sh"
 REPO_RISH_INSTALL="https://raw.githubusercontent.com/merbah3266/rish_installer/main/rish_installer.sh"
@@ -862,15 +862,15 @@ tui_checklist() {
         if [ -n "${TUI_LEGEND:-}" ]; then
             _tui_line "$C_OK" 'green' "$C_DIM" ' = installed  ' "$C_YELLOW" 'yellow' "$C_DIM" ' = update+  ' "$C_ERR" 'red' "$C_DIM" ' = source gone'
         fi
-            local ei estyle=""
-            for ((ei = 0; ei < extra; ei++)); do
-                [ "${#TUI_EXTRA_STYLE[@]}" -gt "$ei" ] && estyle="${TUI_EXTRA_STYLE[$ei]}"
-                if [ -n "$estyle" ]; then
-                    _tui_line "$estyle" "${TUI_EXTRA_KEYS[$ei]} ${TUI_EXTRA_DESCS[$ei]}"
-                else
-                    _tui_line "$C_KEY" "${TUI_EXTRA_KEYS[$ei]}" "$C_DIM" " ${TUI_EXTRA_DESCS[$ei]}"
-                fi
-            done
+        local ei estyle=""
+        for ((ei = 0; ei < extra; ei++)); do
+            [ "${#TUI_EXTRA_STYLE[@]}" -gt "$ei" ] && estyle="${TUI_EXTRA_STYLE[$ei]}"
+            if [ -n "$estyle" ]; then
+                _tui_line "$estyle" "${TUI_EXTRA_KEYS[$ei]} ${TUI_EXTRA_DESCS[$ei]}"
+            else
+                _tui_line "$C_KEY" "${TUI_EXTRA_KEYS[$ei]}" "$C_DIM" " ${TUI_EXTRA_DESCS[$ei]}"
+            fi
+        done
     }
 
     _tui_clear() { printf '\033[%dA\033[J' "$lines"; }
@@ -1171,102 +1171,103 @@ show_menu() {
     # NOTE: never re-exec "$0" here — under `bash <(curl ...)` $0 is a dead
     # /dev/fd pipe, so exec would run an empty script and exit silently.
     while true; do
-    local -a items=()
-    local c
-    items+=("sep|3rd-party tools")
-    # Connectivity first: without it, offline verdicts would paint false reds.
-    # Purple announce — the parallel network probes take a few seconds.
-    announce "Checking connectivity, please wait..."
-    check_connectivity
-    announce "Checking 3rd-party tools (network check, please wait)..."
-    probe_tp_status
-    for c in "${THIRD_PARTY_COMPONENTS[@]}"; do
-        # Green (installed+latest) and broken (dead source) default to off:
-        # re-installing green is pointless, installing broken is impossible.
-        # A ticked green row forces a reinstall at install time.
-        items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
-    done
-    items+=("sep|pkg tools")
-    progress "Checking installed pkg tools..."
-    probe_pkg_status
-    for c in "${PKG_TOOL_COMPONENTS[@]}"; do
-        items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
-    done
-    items+=("sep|options")
-    items+=("apt_upgrade|OPTION: apt update & upgrade before installing (recommended)|$([ "$APT_UPGRADE" -eq 1 ] && echo on || echo off)")
-    items+=("no_storage|OPTION: skip termux-setup-storage (shared storage)|$([ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off)")
-    items+=("kilocode_native|OPTION: kilocode - pick recommended native method (no prompt)|$([ "$KILOCODE_NATIVE" -eq 1 ] && echo on || echo off)")
-    items+=("cleanup|OPTION: cleanup install stubs + caches after installing|$([ "$CLEANUP" -eq 1 ] && echo on || echo off)")
+        local -a items=()
+        local c
+        items+=("sep|3rd-party tools")
+        # Connectivity first: without it, offline verdicts would paint false reds.
+        # Purple announce — the parallel network probes take a few seconds.
+        announce "Checking connectivity, please wait..."
+        check_connectivity
+        announce "Checking 3rd-party tools (network check, please wait)..."
+        probe_tp_status
+        for c in "${THIRD_PARTY_COMPONENTS[@]}"; do
+            # Green (installed+latest) and broken (dead source) default to off:
+            # re-installing green is pointless, installing broken is impossible.
+            # A ticked green row forces a reinstall at install time.
+            items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
+        done
+        items+=("sep|pkg tools")
+        progress "Checking installed pkg tools..."
+        probe_pkg_status
+        for c in "${PKG_TOOL_COMPONENTS[@]}"; do
+            items+=("$c|${COMP_DESC[$c]}$(comp_suffix "$c")|$(menu_default_state "$c")")
+        done
+        items+=("sep|options")
+        items+=("apt_upgrade|OPTION: apt update & upgrade before installing (recommended)|$([ "$APT_UPGRADE" -eq 1 ] && echo on || echo off)")
+        items+=("no_storage|OPTION: skip termux-setup-storage (shared storage)|$([ "$SETUP_STORAGE" -eq 0 ] && echo on || echo off)")
+        items+=("kilocode_native|OPTION: kilocode - pick recommended native method (no prompt)|$([ "$KILOCODE_NATIVE" -eq 1 ] && echo on || echo off)")
+        items+=("cleanup|OPTION: cleanup install stubs + caches after installing|$([ "$CLEANUP" -eq 1 ] && echo on || echo off)")
 
-    # Shortcut keys: 's' saves a Kilo backup, 'u' updates what is installed,
-    # 'p' installs prerequisites on demand (fresh Termux) and reloads the menu.
-    TUI_EXTRA_KEYS=("s" "u")
-    TUI_EXTRA_DESCS=("save kilocode backup" "update installed tools")
-    TUI_EXTRA_BUSY=("Saving Kilo settings and tokens, please wait..."
-                    "Updating installed tools; this can take several minutes...")
-    TUI_EXTRA_FNS=("menu_save_kilo" "menu_update_tools")
-    TUI_EXTRA_STYLE=("" "")
-    TUI_EXTRA_STREAM=(0 1)
-    if prereqs_missing; then
-        TUI_EXTRA_KEYS+=("p")
-        TUI_EXTRA_DESCS+=("install prerequisites (recommended on fresh Termux)")
-        TUI_EXTRA_BUSY+=("Installing prerequisites; this can take several minutes...")
-        TUI_EXTRA_FNS+=("menu_install_prereqs")
-        # The prerequisites shortcut is the important one on a fresh Termux:
-        # render the whole line in bold white so it stands out.
-        TUI_EXTRA_STYLE+=("$C_KEY")
-        TUI_EXTRA_STREAM+=(1)
-    fi
-    # Status colors for pkg rows (green = installed+latest, yellow =
-    # installed+upgradable, default = missing); refreshed after 'u'.
-    refresh_menu_colors
-    TUI_REFRESH_FN="refresh_menu_status"
-    TUI_LEGEND="status"
-
-    # Vertical fit: the redraw moves the cursor up one line per rendered line,
-    # so if the block is taller than the screen the display corrupts. Fall back
-    # to a plain numbered menu (no cursor movement, no tput) instead of
-    # skipping straight into installing everything.
-    local rows est legend_extra=0 text_rc=0
-    rows=$(tput lines 2>/dev/null) || rows=""
-    case "$rows" in ''|*[!0-9]*) rows="${LINES:-24}" ;; esac
-    [ -n "$TUI_LEGEND" ] && legend_extra=1
-    est=$(( ${#items[@]} + 3 + ${#TUI_EXTRA_KEYS[@]} + legend_extra ))   # title + 2 help lines + legend + extra keys
-    if [ "$est" -ge "$rows" ]; then
-        warn "Menu needs $est rows, terminal has $rows"
-        info "Falling back to a plain text menu"
-        info "Tip: zoom out / rotate to landscape for more rows, then press 'r' to reload the full menu"
-        TUI_EXTRA_KEYS=(); TUI_EXTRA_DESCS=(); TUI_EXTRA_BUSY=(); TUI_EXTRA_FNS=()
-        TUI_EXTRA_STYLE=(); TUI_EXTRA_STREAM=()
-        TUI_ITEM_COLOR=(); TUI_REFRESH_FN=""; TUI_LEGEND=""
-        show_text_menu "${items[@]}"
-        text_rc=$?
-        # 42 = 'p' installed the prerequisites, 43 = 'r' reload after zoom:
-        # loop back, rebuild items with fresh probes, and retry the TUI.
-        if [ "$text_rc" -eq 42 ] || [ "$text_rc" -eq 43 ]; then
-            continue
+        # Shortcut keys: 's' saves a Kilo backup, 'u' updates what is installed,
+        # 'p' installs prerequisites on demand (fresh Termux) and reloads the menu.
+        TUI_EXTRA_KEYS=("s" "u")
+        TUI_EXTRA_DESCS=("save kilocode backup" "update installed tools")
+        TUI_EXTRA_BUSY=("Saving Kilo settings and tokens, please wait..."
+                        "Updating installed tools; this can take several minutes...")
+        TUI_EXTRA_FNS=("menu_save_kilo" "menu_update_tools")
+        TUI_EXTRA_STYLE=("" "")
+        TUI_EXTRA_STREAM=(0 1)
+        if prereqs_missing; then
+            TUI_EXTRA_KEYS+=("p")
+            TUI_EXTRA_DESCS+=("install prerequisites (recommended on fresh Termux)")
+            TUI_EXTRA_BUSY+=("Installing prerequisites; this can take several minutes...")
+            TUI_EXTRA_FNS+=("menu_install_prereqs")
+            # The prerequisites shortcut is the important one on a fresh Termux:
+            # render the whole line in bold white so it stands out.
+            TUI_EXTRA_STYLE+=("$C_KEY")
+            TUI_EXTRA_STREAM+=(1)
         fi
-        return "$text_rc"
-    fi
+        # Status colors for pkg rows (green = installed+latest, yellow =
+        # installed+upgradable, default = missing); refreshed after 'u'.
+        refresh_menu_colors
+        TUI_REFRESH_FN="refresh_menu_status"
+        TUI_LEGEND="status"
 
-    local result
-    if ! tui_checklist "tmx2tm.sh v$SCRIPT_VERSION - select components" result "${items[@]}"; then        echo
-        info "Cancelled."
-        exit 130
-    fi
+        # Vertical fit: the redraw moves the cursor up one line per rendered line,
+        # so if the block is taller than the screen the display corrupts. Fall back
+        # to a plain numbered menu (no cursor movement, no tput) instead of
+        # skipping straight into installing everything.
+        local rows est legend_extra=0 text_rc=0
+        rows=$(tput lines 2>/dev/null) || rows=""
+        case "$rows" in ''|*[!0-9]*) rows="${LINES:-24}" ;; esac
+        [ -n "$TUI_LEGEND" ] && legend_extra=1
+        est=$(( ${#items[@]} + 3 + ${#TUI_EXTRA_KEYS[@]} + legend_extra ))   # title + 2 help lines + legend + extra keys
+        if [ "$est" -ge "$rows" ]; then
+            warn "Menu needs $est rows, terminal has $rows"
+            info "Falling back to a plain text menu"
+            info "Tip: zoom out / rotate to landscape for more rows, then press 'r' to reload the full menu"
+            TUI_EXTRA_KEYS=(); TUI_EXTRA_DESCS=(); TUI_EXTRA_BUSY=(); TUI_EXTRA_FNS=()
+            TUI_EXTRA_STYLE=(); TUI_EXTRA_STREAM=()
+            TUI_ITEM_COLOR=(); TUI_REFRESH_FN=""; TUI_LEGEND=""
+            show_text_menu "${items[@]}"
+            text_rc=$?
+            # 42 = 'p' installed the prerequisites, 43 = 'r' reload after zoom:
+            # loop back, rebuild items with fresh probes, and retry the TUI.
+            if [ "$text_rc" -eq 42 ] || [ "$text_rc" -eq 43 ]; then
+                continue
+            fi
+            return "$text_rc"
+        fi
 
-    TUI_EXTRA_KEYS=()
-    TUI_EXTRA_DESCS=()
-    TUI_EXTRA_BUSY=()
-    TUI_EXTRA_FNS=()
-    TUI_EXTRA_STYLE=()
-    TUI_EXTRA_STREAM=()
-    TUI_ITEM_COLOR=()
-    TUI_REFRESH_FN=""
-    TUI_LEGEND=""
+        local result
+        if ! tui_checklist "tmx2tm.sh v$SCRIPT_VERSION - select components" result "${items[@]}"; then
+            echo
+            info "Cancelled."
+            exit 130
+        fi
 
-    apply_menu_result "$result"
-    return 0
+        TUI_EXTRA_KEYS=()
+        TUI_EXTRA_DESCS=()
+        TUI_EXTRA_BUSY=()
+        TUI_EXTRA_FNS=()
+        TUI_EXTRA_STYLE=()
+        TUI_EXTRA_STREAM=()
+        TUI_ITEM_COLOR=()
+        TUI_REFRESH_FN=""
+        TUI_LEGEND=""
+
+        apply_menu_result "$result"
+        return 0
     done
 }
 

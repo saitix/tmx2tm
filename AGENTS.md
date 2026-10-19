@@ -38,6 +38,11 @@ Minimal instructions for agents working in this repo.
      unguarded form, and REMOVES the snippet from both files when the
      starship binary is gone. Marker: `# Initialize Starship only once,
      if installed` + `STARSHIP_START_TIME` guard.
+   - `setup_neofetch_init` syncs its block in `~/.bash_profile` ONLY
+     (zellij would re-run a `.bashrc` copy per tab).
+   - ALL rc-file rewrites (not just appends) MUST go through `rc_rewrite`
+     (with `rc_backup` snapshots to `<file>.tmx2tm.bak`): it validates the
+     result with `bash -n` and writes back in place so symlinks survive.
 6. **Target:** Termux on Android (aarch64) only. No `dialog`/`gum`
    dependencies; the menu is pure bash. Keep `$PREFIX`, `$HOME`, `pkg`
    assumptions intact.
@@ -50,8 +55,10 @@ Minimal instructions for agents working in this repo.
    green (`ok`/`done_step`), warnings yellow/pink (`warn`), errors red
    (`die`/red menu rows). The one exception: `done_step()` (green `==>`)
    for the final "Installation complete" header, which is a result, not
-   progress. Never add a new blue/progress-colored helper — reuse these.
-8. **Unified status model.** Both component groups share one state machine —
+   progress. Summary section headings use green (`C_OK`); `C_BLUE` stays
+   only for the TUI cursor row. Never add a new blue/progress-colored
+   helper — reuse these.
+9. **Unified status model.** Both component groups share one state machine —
    `current` (green, `[installed]`), `outdated` (yellow, `[update+]`),
    `missing` (dim, no suffix), `broken` (red, `[reason]`, 3rd-party only).
    - Green and broken rows default to OFF in the menu (`menu_default_state`);
@@ -64,7 +71,9 @@ Minimal instructions for agents working in this repo.
      directly outside the probe functions.
    - 3rd-party probes live in `probe_tp_one` (pip via `pip index versions`,
      git via `ls-remote` + archived API check); `probe_tp_status` runs them
-     in parallel. Every network call needs a `--max-time` cap.
+     in parallel. Every network call needs a `--max-time` / `timeout` cap
+     (curl: `--max-time` + `--connect-timeout`; git: `timeout` +
+     `GIT_TERMINAL_PROMPT=0`; pip: `--timeout` + `timeout`).
    - `check_connectivity` MUST run before any network probe (menu, refresh,
      non-menu flow). Red verdicts require reachability: offline means
      installed→current, missing→missing — never broken. Gate new red logic
