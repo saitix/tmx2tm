@@ -2574,6 +2574,12 @@ main() {
     fi
 
     announce "Starting installation - packages are downloaded and some are built from source; the display can pause for a while. Please wait..."
+    # Shell snippet sync, unconditional on every run including cleanup-only
+    # (not gated on selection): binary present -> snippet ensured; binary
+    # absent and tool not selected -> snippet removed so uninstalled tools
+    # leave no trace. Starship syncs both rc files; neofetch is profile-only.
+    setup_starship_init
+    setup_neofetch_init
     local any_tool=0 c
     for c in "${ALL_COMPONENTS[@]}"; do is_selected "$c" && any_tool=1; done
     if [ "$any_tool" -eq 0 ]; then
@@ -2601,12 +2607,6 @@ main() {
     install_rish
     install_core
     install_kilocode
-    # Shell snippet sync, unconditional on every install run (not gated on
-    # selection): binary present -> snippet ensured; binary absent and tool
-    # not selected -> snippet removed so uninstalled tools leave no trace.
-    # Starship syncs both rc files; neofetch is profile-only.
-    setup_starship_init
-    setup_neofetch_init
     cleanup_stubs
     print_summary
     # Exit code for scripted -y runs: 0 when everything succeeded or was
