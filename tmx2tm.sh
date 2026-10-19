@@ -111,6 +111,9 @@ pkg_noninteractive() {
 # under each other.
 declare -a TEMP_PATHS=()
 MAIN_PID=$$
+# Set to 1 by the rc-file syncs when they add/remove a snippet; main uses it
+# to print the post-install marker only when something actually changed.
+RC_CHANGED=0
 register_temp() { TEMP_PATHS+=("$1"); }
 # shellcheck disable=SC2329  # invoked via trap
 cleanup_temps() {
@@ -1743,7 +1746,7 @@ setup_starship_init() {
         # guarded form below (block match only; user `fi`s are untouched).
         if [ -f "$f" ] && grep -qxF "$old_marker" "$f" 2>/dev/null; then
             rc_rewrite "$f" _starship_strip_filter \
-                && info "Upgraded legacy starship snippet in $f"
+                && { info "Upgraded legacy starship snippet in $f"; RC_CHANGED=1; }
         fi
     done
 
@@ -1754,7 +1757,7 @@ setup_starship_init() {
         for f in "$BASH_PROFILE" "$BASHRC"; do
             if [ -f "$f" ] && grep -qxF "$marker" "$f" 2>/dev/null; then
                 rc_rewrite "$f" _starship_strip_filter \
-                    && info "Removed starship init from $f (starship not installed)"
+                    && { info "Removed starship init from $f (starship not installed)"; RC_CHANGED=1; }
                 removed=1
             fi
         done
@@ -1778,7 +1781,7 @@ setup_starship_init() {
             printf '%s\n' '    eval "$(starship init bash)"'
             printf '%s\n' 'fi'
         } >>"$f"
-        info "Added starship init to $f"
+        info "Added starship init to $f"; RC_CHANGED=1
     done
     ok "starship -> $(command -v starship)"
 }
@@ -1847,7 +1850,7 @@ setup_neofetch_init() {
         for f in "$BASH_PROFILE" "$BASHRC"; do
             if [ -f "$f" ] && grep -qxF "$start_marker" "$f" 2>/dev/null; then
                 rc_rewrite "$f" _neofetch_strip_filter \
-                    && info "Removed neofetch init from $f (neofetch not installed)"
+                    && { info "Removed neofetch init from $f (neofetch not installed)"; RC_CHANGED=1; }
                 removed=1
             fi
         done
@@ -1860,7 +1863,7 @@ setup_neofetch_init() {
     # Drop any stale copy in .bashrc: profile-only from now on.
     if [ -f "$BASHRC" ] && grep -qxF "$start_marker" "$BASHRC" 2>/dev/null; then
         rc_rewrite "$BASHRC" _neofetch_strip_filter \
-            && info "Removed stale neofetch init from $BASHRC (profile-only now)"
+            && { info "Removed stale neofetch init from $BASHRC (profile-only now)"; RC_CHANGED=1; }
     fi
 
     f="$BASH_PROFILE"
@@ -1882,7 +1885,7 @@ setup_neofetch_init() {
             printf '%s\n' 'fi'
             printf '%s\n' "$end_marker"
         } >>"$f"
-        info "Added neofetch init to $f"
+        info "Added neofetch init to $f"; RC_CHANGED=1
     fi
     ok "neofetch -> $(command -v neofetch)"
 }
@@ -2578,8 +2581,15 @@ main() {
     # (not gated on selection): binary present -> snippet ensured; binary
     # absent and tool not selected -> snippet removed so uninstalled tools
     # leave no trace. Starship syncs both rc files; neofetch is profile-only.
+    # The syncs set RC_CHANGED=1 when they add or remove anything, so main
+    # can mark the post-install moment with a step header only when needed.
+    RC_CHANGED=0
     setup_starship_init
     setup_neofetch_init
+    if [ "$RC_CHANGED" -eq 1 ]; then
+        done_step "Shell snippets synced"
+        RC_CHANGED=0
+    fi
     local any_tool=0 c
     for c in "${ALL_COMPONENTS[@]}"; do is_selected "$c" && any_tool=1; done
     if [ "$any_tool" -eq 0 ]; then
@@ -2609,8 +2619,12 @@ main() {
     install_kilocode
     # Post-install sync: tools just installed now have binaries, so ensure
     # their snippets (the early sync only handled removals + pre-installed).
+    RC_CHANGED=0
     setup_starship_init
     setup_neofetch_init
+    if [ "$RC_CHANGED" -eq 1 ]; then
+        done_step "Shell snippets synced"
+    fi
     cleanup_stubs
     print_summary
     # Exit code for scripted -y runs: 0 when everything succeeded or was
