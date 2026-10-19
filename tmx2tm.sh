@@ -2020,10 +2020,12 @@ human_size() {
     fi
 }
 
-# Remove install stubs + caches left behind by the 3rd-party stages: pip
-# cache/wheels, apt archives, cargo/rust build cache, go build cache, uv/node
-# caches, and temp downloads. Safe to run repeatedly; only caches are removed,
-# never installed tools.
+# Remove install stubs + caches left behind by the 3rd-party stages. Exactly
+# what goes: pip/uv caches, pip temp build dirs, apt archives (apt clean),
+# cargo registry + rustup tmp, go build/test cache, npm cache + ~/.npm,
+# tool-owned temp stubs (core-*, rish*), and __pycache__/*.pyc inside the
+# tool lib dirs. Never touches installed tools, other programs' temp files,
+# or the go module cache (re-downloading modules is expensive on mobile).
 cleanup_stubs() {
     [ "$CLEANUP" -eq 1 ] || return 0
 
@@ -2031,30 +2033,33 @@ cleanup_stubs() {
 
     # Measure the reclaimable size in advance: du over exactly the paths the
     # pass removes (existing ones only), so the figure is the cleanup's own
-    # footprint — not whole-$HOME noise from concurrent downloads.
+    # footprint. The two lib trees contribute only their pyc portion (_pyc).
     local -a _cl=()
     local _p _pipdir
     for _p in "$HOME/.cache/pip" "$HOME/.cache/uv" "$HOME/.npm" \
               "$HOME/.cache/go-build" "$HOME/.cargo/registry" \
-              "$HOME/.rustup/tmp" "${CARGO_HOME:-}/registry" \
-              /var/cache/apt/archives "$PREFIX/var/cache/apt/archives"; do
-        [ -n "$_p" ] && [ -e "$_p" ] && _cl+=("$_p")
+              "$HOME/.rustup/tmp" "$PREFIX/var/cache/apt/archives"; do
+        if [ -n "$_p" ] && [ -e "$_p" ]; then _cl+=("$_p"); fi
     done
+    if [ -n "${CARGO_HOME:-}" ] && [ -e "$CARGO_HOME/registry" ]; then
+        _cl+=("$CARGO_HOME/registry")
+    fi
     for _p in "$TMPDIR"/pip-* "$TMPDIR"/pip_build_* "$PREFIX"/tmp/pip-* \
-              "$TMPDIR"/core-* "$TMPDIR"/rish* "$TMPDIR"/tmp.* \
-              "$HOME/.local/lib" "$SHIZUKU_DIR"; do
-        # globs that match nothing stay literal: keep only existing paths.
-        # shellcheck disable=SC2128  # intentional glob expansion, not $TMPDIR alone
-        [ -e "$_p" ] && _cl+=("$_p")
+              "$TMPDIR"/core-* "$TMPDIR"/rish*; do
+        # Globs that match nothing stay literal: keep only existing paths.
+        if [ -e "$_p" ]; then _cl+=("$_p"); fi
+    done
+    # Registered temp paths from this run (task 6 registry).
+    local _rp
+    for _rp in "${TEMP_PATHS[@]}"; do
+        if [ -e "$_rp" ]; then _cl+=("$_rp"); fi
     done
     if command -v pip >/dev/null 2>&1; then
         _pipdir=$(pip cache dir 2>/dev/null)
-        [ -n "$_pipdir" ] && [ -e "$_pipdir" ] && _cl+=("$_pipdir")
+        if [ -n "$_pipdir" ] && [ -e "$_pipdir" ]; then _cl+=("$_pipdir"); fi
     fi
     local reclaim=0 _sz
     if [ "${#_cl[@]}" -gt 0 ]; then
-        # du once over all candidates; go/shizuku trees need the pyc-only
-        # portion, added separately below.
         _sz=$(du -sb "${_cl[@]}" 2>/dev/null | awk '{s+=$1} END{print s+0}')
         case "$_sz" in ''|*[!0-9]*) _sz=0 ;; esac
         reclaim=$((reclaim + _sz))
@@ -2064,10 +2069,6 @@ cleanup_stubs() {
         | tr '\n' '\0' | du -sb --files0-from=- 2>/dev/null | tail -1 | awk '{print $1}')
     case "$_pyc" in ''|*[!0-9]*) _pyc=0 ;; esac
     reclaim=$((reclaim + _pyc))
-    # Subtract the double-counted pyc portion inside the two trees above: the
-    # trees were measured whole, so add back nothing — instead report the
-    # whole-tree figure as the estimate; the pyc split is informational only.
-    # (Kept simple: estimate = full candidate size, actual = same paths gone.)
 
     if [ "$reclaim" -gt 0 ]; then
         progress "Reclaimable: $(human_size "$reclaim") — removing now..."
@@ -2078,33 +2079,46 @@ cleanup_stubs() {
     if command -v pip >/dev/null 2>&1; then
         pip cache purge >/dev/null 2>&1 || info "pip cache: nothing to purge"
     fi
-    command -v pip3 >/dev/null 2>&1 && pip3 cache purge >/dev/null 2>&1 || true
+    if command -v pip3 >/dev/null 2>&1; then
+        pip3 cache purge >/dev/null 2>&1 || true
+    fi
     # pip build dirs outside the cache (wheels, isolated-build envs, uv cache).
     rm -rf "$HOME/.cache/pip" "$HOME/.cache/uv" \
-        "$TMPDIR/pip-"* "$TMPDIR/pip_build_"* "$PREFIX/tmp/pip-"* 2>/dev/null || true
+        "$TMPDIR"/pip-* "$TMPDIR"/pip_build_* "$PREFIX"/tmp/pip-* 2>/dev/null || true
     info "pip/uv caches cleared"
 
     if command -v apt >/dev/null 2>&1; then
-        DEBIAN_FRONTEND=noninteractive apt clean -y >/dev/null 2>&1 \
-            || warn "apt clean reported errors"
-        DEBIAN_FRONTEND=noninteractive apt autoremove -y >/dev/null 2>&1 \
-            || warn "apt autoremove reported errors"
-        info "apt archives + orphans cleared"
+        if DEBIAN_FRONTEND=noninteractive apt clean -y >/dev/null 2>&1; then
+            info "apt archives cleared"
+        else
+            warn "apt clean reported errors"
+        fi
     fi
 
     # Compiler caches from source-built extensions (jiter/pydantic-core via shizuku).
     # ~/.cargo/registry (cache + src + index) is fully re-downloadable: cargo
     # re-fetches it on the next build, so wiping it only costs a re-download.
     rm -rf "$HOME/.cache/pip" "$HOME/.cargo/registry" "$HOME/.rustup/tmp" 2>/dev/null || true
-    [ -n "${CARGO_HOME:-}" ] && rm -rf "$CARGO_HOME/registry" 2>/dev/null || true
-    command -v cargo >/dev/null 2>&1 && cargo cache -a >/dev/null 2>&1 || true
-    command -v go >/dev/null 2>&1 && go clean -cache -modcache -testcache >/dev/null 2>&1 \
-        || rm -rf "$HOME/.cache/go-build" 2>/dev/null || true
+    if [ -n "${CARGO_HOME:-}" ]; then
+        rm -rf "$CARGO_HOME/registry" 2>/dev/null || true
+    fi
+    if command -v cargo >/dev/null 2>&1; then
+        cargo cache -a >/dev/null 2>&1 || true
+    fi
+    # Build + test cache only: keep the module cache (no -modcache).
+    if command -v go >/dev/null 2>&1; then
+        go clean -cache -testcache >/dev/null 2>&1 \
+            || rm -rf "$HOME/.cache/go-build" 2>/dev/null || true
+    else
+        rm -rf "$HOME/.cache/go-build" 2>/dev/null || true
+    fi
     info "cargo/go build caches cleared"
 
     # Node/npm (core installer) and core-termux temp clones.
-    command -v npm >/dev/null 2>&1 && npm cache clean --force >/dev/null 2>&1 || true
-    rm -rf "$HOME/.npm" "$TMPDIR/core-"* "$TMPDIR/rish"* "$TMPDIR/tmp."* 2>/dev/null || true
+    if command -v npm >/dev/null 2>&1; then
+        npm cache clean --force >/dev/null 2>&1 || true
+    fi
+    rm -rf "$HOME/.npm" "$TMPDIR"/core-* "$TMPDIR"/rish* 2>/dev/null || true
     info "npm/core temp stubs cleared"
 
     # Stale .pyc / __pycache__ shipped inside the tool dirs (regenerated on use).
@@ -2112,14 +2126,17 @@ cleanup_stubs() {
     find "$HOME/.local/lib" "$SHIZUKU_DIR" -type f -name '*.pyc' -delete 2>/dev/null || true
     info "compile caches (__pycache__/*.pyc) cleared"
 
-    local freed_after=0 _left
+    local freed_after=0 _left _pyc_left
     if [ "${#_cl[@]}" -gt 0 ]; then
         _left=$(du -sb "${_cl[@]}" 2>/dev/null | awk '{s+=$1} END{print s+0}')
         case "$_left" in ''|*[!0-9]*) _left=0 ;; esac
-        freed_after=$((reclaim > _left ? reclaim - _left : 0))
     else
-        freed_after="$reclaim"
+        _left=0
     fi
+    _pyc_left=$(find "$HOME/.local/lib" "$SHIZUKU_DIR" \( -type d -name '__pycache__' -prune \) -o \( -type f -name '*.pyc' -print \) 2>/dev/null \
+        | tr '\n' '\0' | du -sb --files0-from=- 2>/dev/null | tail -1 | awk '{print $1}')
+    case "$_pyc_left" in ''|*[!0-9]*) _pyc_left=0 ;; esac
+    freed_after=$((reclaim > _left + _pyc_left ? reclaim - _left - _pyc_left : 0))
     if [ "$reclaim" -gt 0 ]; then
         ok "cleanup freed $(human_size "$freed_after") (estimated $(human_size "$reclaim"))"
     else
