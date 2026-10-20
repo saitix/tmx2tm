@@ -17,10 +17,12 @@ the script header comment, `SCRIPT_VERSION`, and the version note in
 (nothing yet — move finished entries into the next versioned section on
 release)
 
-## [0.9] — 2026-10-20
+## [0.9]
 
-The current release, deliberately kept at 0.9 to match the README screenshot
-— it contains the tagged v0.9 menu work plus two reviewer rounds on top.
+The current version number — unchanged since the `v0.9` tag even though a
+lot landed afterwards (two reviewer rounds, the cleanup option, the test
+suite). No new release has been cut; everything below ships (or will ship)
+as 0.9.
 
 ### Added
 
