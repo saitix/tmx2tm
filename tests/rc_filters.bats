@@ -16,6 +16,17 @@ assert_syntax() { bash -n "$1"; }
 
 @test "starship: current snippet only is removed" {
     input='# Initialize Starship only once, if installed
+if ! declare -F starship_precmd >/dev/null 2>&1 && command -v starship >/dev/null 2>&1; then
+    eval "$(starship init bash)"
+fi
+'
+    run filter "$input" _starship_strip_filter
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "starship: older STARSHIP_START_TIME form is removed" {
+    input='# Initialize Starship only once, if installed
 if [ -z "$STARSHIP_START_TIME" ] && command -v starship >/dev/null 2>&1; then
     eval "$(starship init bash)"
 fi

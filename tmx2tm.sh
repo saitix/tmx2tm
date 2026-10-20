@@ -83,6 +83,7 @@ C_KEY=$'\e[1;37m'   # bold white, used for shortcut keys
 C_ERR=$'\e[1;31m'
 C_PURPLE=$'\e[38;5;135m'   # "working / please wait" notices
 C_YELLOW=$'\e[38;5;220m'   # pkg tool installed but upgradable (menu status)
+C_CYAN=$'\e[38;5;51m'      # rc-file sync result header (sync_step)
 
 step() { printf '\n%s==>%s %s%s%s\n' "$C_PURPLE" "$C_RESET" "$C_HL" "$1" "$C_RESET"; }
 announce() { printf '\n%s%s%s\n' "$C_PURPLE" "$1" "$C_RESET"; }
@@ -95,6 +96,9 @@ ok()   { printf '    %s[ok]%s %s\n' "$C_OK" "$C_RESET" "$1"; }
 warn() { printf '    %s[!]%s %s\n' "$C_WARN" "$C_RESET" "$1"; }
 die()  { printf '\n%s[ERROR]%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2; exit 1; }
 done_step() { printf '\n%s==>%s %s%s%s\n' "$C_OK" "$C_RESET" "$C_OK" "$1" "$C_RESET"; }
+# Cyan variant reserved for the rc-file-sync result header (the one exception
+# next to done_step; see AGENTS.md rule 8).
+sync_step() { printf '\n%s==>%s %s%s%s\n' "$C_CYAN" "$C_RESET" "$C_CYAN" "$1" "$C_RESET"; }
 
 # Non-interactive pkg/apt wrapper: every install/upgrade/reinstall goes
 # through here so dpkg can never stop an unattended run at a conffile prompt.
@@ -163,13 +167,18 @@ DOWNLOAD_TIMEOUT=120    # installer downloads (rish, core) --max-time
 # remove the link and rerun the installer — so the install stage proceeds.
 TP_WHY_DANGLING="link target missing"
 
+# Maximum number of BODY lines between the neofetch start/end markers for the
+# block to count as ours; beyond this the end marker is assumed to belong to
+# something else and the file is left untouched.
+NEOFETCH_BLOCK_CAP=20
+
 SHIZUKU_DIR="$HOME/termux-shizuku-tools"
 BASHRC="$HOME/.bashrc"
 BASH_PROFILE="$HOME/.bash_profile"
 
 # pkg dependencies shared by the complex tools (always installed).
 BASE_PKG_DEPS=(
-    python termux-api
+    python python-pip termux-api
     git nodejs curl wget openssh nmap android-tools root-repo
     ncurses-utils glow gh ripgrep jq
     unzip                       # rish APK extraction (upstream has a BusyBox fallback)
@@ -404,7 +413,7 @@ comp_suffix() {
         current)  printf ' [installed]' ;;
         outdated) printf ' [update+]' ;;
         broken)
-            why="${TP_BROKEN_WHY[$1]:-source gone}"
+            why="$(comp_broken_why "$1")"
             printf ' [%s]' "$why" ;;
         *)        printf '' ;;
     esac
@@ -418,6 +427,12 @@ comp_status() {
         *" $1 "*) printf '%s' "${PKG_STATUS[$1]:-missing}" ;;
         *)        printf '%s' "${TP_STATUS[$1]:-missing}" ;;
     esac
+}
+
+# Broken-reason accessor (3rd-party rows); use this instead of reading
+# TP_BROKEN_WHY outside the probe functions.
+comp_broken_why() {
+    printf '%s' "${TP_BROKEN_WHY[$1]:-source gone}"
 }
 
 # Row color for any component tag by probe state: green = installed+latest,
@@ -687,7 +702,7 @@ probe_tp_one() {
 # first so offline verdicts stay honest (no false reds in airplane mode).
 # Each job writes its two-line result to a temp file; this function waits for
 # all of them, then fills TP_STATUS / TP_BROKEN_WHY. Slow networks are bounded
-# by the per-call --max-time flags inside the probes.
+# by the named timeout variables (NET_*/GIT_*/PIP_*/PYPI_*/GH_*) in the probes.
 probe_tp_status() {
     TP_STATUS=()
     TP_BROKEN_WHY=()
@@ -729,10 +744,10 @@ record_result() { RESULT[$1]="$2|${3:-}"; }
 # Broken + selected never dies mid-run: warn and skip instead.
 TP_FORCE=0
 tp_gate() {
-    local tag="$1"
+    local tag="$1" why
     TP_FORCE=0
     ensure_tp_status
-    case "${TP_STATUS[$tag]:-missing}" in
+    case "$(comp_status "$tag")" in
         current)
             if [ "$MENU_CONFIRMED" -eq 1 ]; then TP_FORCE=1; return 0; fi
             info "'$tag' already installed (latest), skipping"
@@ -743,12 +758,13 @@ tp_gate() {
             # repair itself (remove the link, rerun the installer), so it
             # proceeds instead of skipping. Any other reason (archived,
             # unreachable) is a dead source: warn and skip.
-            if [ "${TP_BROKEN_WHY[$tag]:-}" = "$TP_WHY_DANGLING" ]; then
+            why="$(comp_broken_why "$tag")"
+            if [ "$why" = "$TP_WHY_DANGLING" ]; then
                 info "'$tag' has a stale link ($TP_WHY_DANGLING); it will be replaced"
                 return 0
             fi
-            warn "'$tag' skipped (${TP_BROKEN_WHY[$tag]:-source gone})"
-            record_result "$tag" broken "${TP_BROKEN_WHY[$tag]:-source gone}"
+            warn "'$tag' skipped ($why)"
+            record_result "$tag" broken "$why"
             return 1 ;;
         *) return 0 ;;
     esac
@@ -1127,8 +1143,7 @@ menu_save_kilo() { save_kilo "$DEFAULT_KILO_BACKUP"; }
 # Action for the 'u' shortcut: refresh what is already installed. The pkg tools
 # are covered by a single `pkg update && pkg upgrade`, so their individual
 # toggles are irrelevant; each selected 3rd-party tool is updated only when it
-# is actually present. Runs in a subshell (the caller captures its output), so
-# the SELECTED mutations below do not leak into the menu state.
+# is actually present.
 menu_update_tools() {
     export TERM="${TERM:-xterm-256color}"
 
@@ -1625,12 +1640,14 @@ show_text_menu() {
 }
 
 # Update action variant for the text menu: same updates as the TUI 'u' key,
-# but without TUI locals (no TUI_ON_TAGS / redraw). Updates everything that
-# is installed, then returns to the text menu loop.
+# but built from the text menu's toggles (tags/states) instead of the TUI's
+# TUI_ON_TAGS.
 menu_update_tools_no_tui() {
-    local TUI_ON_TAGS=""
-    local c
-    for c in "${ALL_COMPONENTS[@]}"; do TUI_ON_TAGS+="$c "; done
+    local TUI_ON_TAGS="" i
+    for ((i = 0; i < ${#tags[@]}; i++)); do
+        [ -n "${tags[$i]}" ] || continue
+        [ "${states[$i]}" = on ] && TUI_ON_TAGS+="${tags[$i]} "
+    done
     TUI_ON_TAGS="${TUI_ON_TAGS% }"
     menu_update_tools
 }
@@ -1783,10 +1800,10 @@ setup_golang_path() {
 # Starship prompt init, kept in sync in ~/.bash_profile AND ~/.bashrc on every
 # run (not just when starship is selected): zellij sources ~/.bashrc for its
 # panes even inside a login shell, so the snippet must live in both files.
-# The snippet evals at most once per shell tree: STARSHIP_START_TIME is set by
-# starship's own init on first eval, so a second sourcing (e.g. zellij reading
-# .bashrc after .bash_profile already ran) is a no-op instead of a
-# double-rendered prompt with double-registered keybindings.
+# The snippet inits once per shell: the guard checks `declare -F
+# starship_precmd` (the function exists only after init in THIS shell and is
+# never inherited by children), so a later `source ~/.bashrc` is a no-op
+# instead of a double-rendered prompt with double-registered keybindings.
 # Filter: drop one starship snippet block (marker + its exact body lines).
 # Reads the file on stdin, writes the result on stdout.
 # After a marker, expected body lines are consumed ONE AT A TIME and only on
@@ -1801,7 +1818,8 @@ setup_golang_path() {
 _starship_strip_filter() {
     awk '
         function is_body(line) {
-            return (line == "if [ -z \"$STARSHIP_START_TIME\" ] && command -v starship >/dev/null 2>&1; then" \
+            return (line == "if ! declare -F starship_precmd >/dev/null 2>&1 && command -v starship >/dev/null 2>&1; then" \
+                || line == "if [ -z \"$STARSHIP_START_TIME\" ] && command -v starship >/dev/null 2>&1; then" \
                 || line == "if command -v starship >/dev/null 2>&1; then" \
                 || line == "    eval \"$(starship init bash)\"" \
                 || line == "fi")
@@ -1845,6 +1863,8 @@ setup_starship_init() {
 
     local marker='# Initialize Starship only once, if installed'
     local old_marker='# Initialize Starship only if installed'
+    # shellcheck disable=SC2016  # literal snippet line, must not expand
+    local new_guard='if ! declare -F starship_precmd >/dev/null 2>&1 && command -v starship >/dev/null 2>&1; then'
     local f
     for f in "$BASH_PROFILE" "$BASHRC"; do
         # Drop the legacy unguarded snippet block so it is replaced by the
@@ -1874,14 +1894,24 @@ setup_starship_init() {
 
     for f in "$BASH_PROFILE" "$BASHRC"; do
         if [ -f "$f" ] && grep -qxF "$marker" "$f" 2>/dev/null; then
-            info "Starship init already present in $f"
-            continue
+            if grep -qxF "$new_guard" "$f" 2>/dev/null; then
+                info "Starship init already present in $f"
+                continue
+            fi
+            # Marker present but the body is an older guard form
+            # (STARSHIP_START_TIME): strip it and re-add the current form.
+            if rc_rewrite "$f" _starship_strip_filter; then
+                info "Upgraded starship guard in $f"; RC_CHANGED=1
+            else
+                warn "Could not upgrade starship guard in $f; leaving it"
+                continue
+            fi
         fi
         rc_backup "$f"
         {
             printf '\n%s\n' "$marker"
             # shellcheck disable=SC2016  # literal snippet for the rc files, must not expand
-            printf '%s\n' 'if [ -z "$STARSHIP_START_TIME" ] && command -v starship >/dev/null 2>&1; then'
+            printf '%s\n' "$new_guard"
             # shellcheck disable=SC2016  # literal snippet for the rc files, must not expand
             printf '%s\n' '    eval "$(starship init bash)"'
             printf '%s\n' 'fi'
@@ -1907,7 +1937,7 @@ setup_starship_init() {
 # (if/neofetch/fi/NEOFETCH_SHOWN), stopping at the first unrelated line.
 # shellcheck disable=SC2329  # invoked via rc_rewrite
 _neofetch_strip_filter() {
-    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' '
+    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' -v cap="$NEOFETCH_BLOCK_CAP" '
         function is_snippet(line) {
             return (line ~ /^if .*neofetch/ || line ~ /neofetch --off/ \
                 || line == "fi" || line ~ /NEOFETCH_SHOWN/ || line == "neofetch")
@@ -1932,10 +1962,12 @@ _neofetch_strip_filter() {
         inb {
             buf[n++]=$0
             if ($0 == e) {
-                if (n <= 21) { inb=0; n=0; next }  # closed block: drop it
+                # Closed block within the cap: drop it (n counts the end
+                # marker line, so the cap on body lines is cap + 1).
+                if (n <= cap + 1) { inb=0; n=0; next }
                 flush_far(); next
             }
-            if (n > 21) { flush_far(); next }
+            if (n > cap + 1) { flush_far(); next }
             next
         }
         { print }
@@ -1943,8 +1975,8 @@ _neofetch_strip_filter() {
     '
 }
 _neofetch_has_closed_block() {
-    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' '
-        $0==s{inb=1; n=0; next} inb{n++; if($0==e){if(n<=21)ok=1; inb=0}} END{exit !ok}' \
+    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' -v cap="$NEOFETCH_BLOCK_CAP" '
+        $0==s{inb=1; n=0; next} inb{n++; if($0==e){if(n<=cap+1)ok=1; inb=0}} END{exit !ok}' \
         "$1" 2>/dev/null
 }
 setup_neofetch_init() {
@@ -2022,7 +2054,7 @@ install_pkg_tools() {
     local c p bin
     for c in "${PKG_TOOL_COMPONENTS[@]}"; do
         is_selected "$c" || continue
-        if [ "${PKG_STATUS[$c]:-missing}" = "current" ]; then
+        if [ "$(comp_status "$c")" = "current" ]; then
             if [ "$MENU_CONFIRMED" -eq 1 ]; then
                 # Explicitly ticked green tool: the user wants a reinstall.
                 for p in ${PKG_COMPONENT[$c]}; do reinstall_pkgs+=("$p"); done
@@ -2035,19 +2067,11 @@ install_pkg_tools() {
         fi
         for p in ${PKG_COMPONENT[$c]}; do pkgs+=("$p"); done
     done
-    for c in "${PKG_TOOL_COMPONENTS[@]}"; do
-        is_selected "$c" && continue
-        if [ "${PKG_STATUS[$c]:-missing}" = "current" ]; then
-            skipped+=("$c")
-        fi
-    done
 
     if [ "${#skipped[@]}" -gt 0 ]; then
         info "Already installed (latest), skipping: ${skipped[*]}"
         for c in "${skipped[@]}"; do
-            case " ${PKG_TOOL_COMPONENTS[*]} " in
-                *" $c "*) record_result "$c" skipped "already installed (latest)" ;;
-            esac
+            record_result "$c" skipped "already installed (latest)"
         done
     fi
     # Batch install first; on failure retry each package alone so one bad
@@ -2091,7 +2115,7 @@ install_pkg_tools() {
         bin="${PKG_COMPONENT_CMD[$c]:-$c}"
         if command -v "$bin" >/dev/null 2>&1; then
             ok "$c -> $(command -v "$bin")"
-            if [ "$MENU_CONFIRMED" -eq 1 ] && [ "${PKG_STATUS[$c]:-missing}" = "current" ]; then
+            if [ "$MENU_CONFIRMED" -eq 1 ] && [ "$(comp_status "$c")" = "current" ]; then
                 record_result "$c" updated "$(command -v "$bin")"
             elif [ -z "${RESULT[$c]:-}" ]; then
                 record_result "$c" installed "$(command -v "$bin")"
@@ -2111,8 +2135,6 @@ install_pip_tools() {
     is_selected copyparty || is_selected ytdlp || is_selected pydf || return 0
 
     step "Installing Python-based tools"
-
-    python -m ensurepip --upgrade >/dev/null 2>&1 || warn "ensurepip reported issues; continuing"
 
     if is_selected copyparty; then
         if tp_gate copyparty; then
@@ -2647,8 +2669,11 @@ restore_kilo() {
     # Defense against a wrong or hostile archive: only the exact members we
     # produce are allowed, so nothing can be written outside the kilo dirs.
     # The storage/ directory matches by prefix (it contains per-session files).
+    # Additionally refuse any non-regular/non-directory entry (symlinks, hard
+    # links, devices): a symlink member followed by a file written through it
+    # is a known extraction trick.
     tar -tzf "$in" >/dev/null 2>&1 || die "Not a valid tar.gz backup: $in"
-    local member bad_members=""
+    local member bad_members="" typ
     while IFS= read -r member; do
         case "$member" in
             .config/kilo/kilo.jsonc|.local/share/kilo/auth.json|.local/state/kilo/model.json|.local/state/kilo/session.json|.local/state/kilo/prompt-history.jsonl|.local/share/kilo/storage|.local/share/kilo/storage/*) ;;
@@ -2658,10 +2683,16 @@ restore_kilo() {
     if [ -n "$bad_members" ]; then
         die "Refusing to restore: unexpected archive entries: $bad_members"
     fi
+    while read -r typ _; do
+        case "$typ" in
+            -|d) ;;
+            *) die "Refusing to restore: archive contains a non-regular/non-directory entry (type '$typ')" ;;
+        esac
+    done < <(tar -tvzf "$in" 2>/dev/null | awk '{print $1}')
 
     step "Restoring Kilo settings from $in"
     mkdir -p "$KILO_CONFIG_DIR" "$KILO_DATA_DIR" "$KILO_STATE_DIR"
-    tar -xzf "$in" -C "$HOME" || die "Failed to extract backup: $in"
+    tar --no-same-owner -xzf "$in" -C "$HOME" || die "Failed to extract backup: $in"
 
     # Re-assert owner-only permissions on the secrets we just restored.
     [ -f "$KILO_DATA_DIR/auth.json" ]    && chmod 600 "$KILO_DATA_DIR/auth.json"
@@ -2695,17 +2726,18 @@ main() {
     fi
 
     announce "Starting installation - packages are downloaded and some are built from source; the display can pause for a while. Please wait..."
-    # Shell snippet sync, unconditional on every run including cleanup-only
-    # (not gated on selection): binary present -> snippet ensured; binary
-    # absent and tool not selected -> snippet removed so uninstalled tools
-    # leave no trace. Starship syncs both rc files; neofetch is profile-only.
-    # The syncs set RC_CHANGED=1 when they add or remove anything, so main
-    # can mark the post-install moment with a step header only when needed.
+    # Shell snippet sync, unconditional on every run including cleanup-only:
+    # binary present -> snippet ensured; binary absent -> snippet removed so
+    # uninstalled tools leave no trace. Starship syncs both rc files; neofetch
+    # is profile-only. The syncs set RC_CHANGED=1 when they add or remove
+    # anything, so main can mark the moment with a step header only when
+    # needed. (A second pass after the install stages re-adds snippets for
+    # tools installed during this run.)
     RC_CHANGED=0
     setup_starship_init
     setup_neofetch_init
     if [ "$RC_CHANGED" -eq 1 ]; then
-        done_step "Shell snippets synced"
+        sync_step "Shell snippets synced"
         RC_CHANGED=0
     fi
     local any_tool=0 c
@@ -2741,7 +2773,7 @@ main() {
     setup_starship_init
     setup_neofetch_init
     if [ "$RC_CHANGED" -eq 1 ]; then
-        done_step "Shell snippets synced"
+        sync_step "Shell snippets synced"
     fi
     cleanup_stubs
     print_summary

@@ -58,7 +58,7 @@ bash tmx2tm.sh -y           # unattended: install everything
 Base pkg dependencies (always):
 
 ```text
-python termux-api git nodejs curl wget openssh nmap android-tools
+python python-pip termux-api git nodejs curl wget openssh nmap android-tools
 root-repo ncurses-utils glow gh ripgrep jq unzip
 ```
 
@@ -109,18 +109,20 @@ export PATH="$GOPATH/bin:$PATH"
 When `starship` is installed, the installer keeps its init snippet in sync in
 **both** `~/.bash_profile` and `~/.bashrc` on every run (zellij sources
 `~/.bashrc` for its panes even inside a login shell, so one file is not
-enough). The snippet evals at most once per shell tree — `STARSHIP_START_TIME`
-is set by starship's own init on first eval, so a second sourcing is a no-op
-instead of a double-rendered prompt:
+enough). The snippet inits once per shell — the guard checks `declare -F
+starship_precmd` (set only by init in the current shell, never inherited by
+children), so a later `source ~/.bashrc` is a no-op instead of a
+double-rendered prompt:
 
 ```bash
 # Initialize Starship only once, if installed
-if [ -z "$STARSHIP_START_TIME" ] && command -v starship >/dev/null 2>&1; then
+if ! declare -F starship_precmd >/dev/null 2>&1 && command -v starship >/dev/null 2>&1; then
     eval "$(starship init bash)"
 fi
 ```
 
-Legacy unguarded snippets are upgraded in place. If starship is not installed
+Older forms (the `STARSHIP_START_TIME` guard and the legacy unguarded `if
+command -v starship`) are upgraded in place. If starship is not installed
 (e.g. the user uninstalled it), the snippet is removed from both files so
 shells stay clean. The sync only runs when the installer itself runs under
 bash.
@@ -143,6 +145,12 @@ If neofetch is not installed (e.g. the user uninstalled it and did not select
 it), the snippet is removed from `.bash_profile` (plus any stale copy in
 `.bashrc`). The sync also repairs the legacy variant found in the wild, which
 lacks the closing `fi`. Only runs when the installer itself runs under bash.
+
+The starship and neofetch syncs run on **every** run, including cleanup-only
+runs (nothing selected but `cleanup`). A second pass runs after the install
+stages so snippets are added for tools installed during the same run. When a
+sync adds or removes a snippet, a cyan `Shell snippets synced` header marks
+the moment; a run that changes nothing stays silent.
 
 ### Options (listed last, after the pkg tools)
 
@@ -253,13 +261,14 @@ against `pip index versions`; the shizuku clone compares local HEAD with the
 remote; core/kilocode/rish count as installed when their binaries exist. The
 probes run in parallel in the background (about a second for all tools on a
 normal network) with a purple "please wait" notice while they run. On a very
-slow network the menu can take up to ~45 s (bounded by the git probe plus the
-GitHub API check); timeouts are generous so slow-but-alive sources are not
-marked broken. All network timeouts live as named variables next to
-`SCRIPT_VERSION` at the top of the script (`NET_CHECK_TIMEOUT`,
-`NET_CONNECT_TIMEOUT`, `GIT_PROBE_TIMEOUT`, `GH_API_TIMEOUT`,
-`PIP_INDEX_TIMEOUT`, `PIP_NET_TIMEOUT`, `PYPI_PROBE_TIMEOUT`,
-`DOWNLOAD_TIMEOUT`).
+slow network the menu can take up to ~65 s: worst case ≈
+`NET_CHECK_TIMEOUT` + max(`GIT_PROBE_TIMEOUT` + `GH_API_TIMEOUT`,
+`PIP_INDEX_TIMEOUT` + `PIP_NET_TIMEOUT`) = 10 + max(45, 55) s. Timeouts are
+generous so slow-but-alive sources are not marked broken. All network
+timeouts live as named variables next to `SCRIPT_VERSION` at the top of the
+script (`NET_CHECK_TIMEOUT`, `NET_CONNECT_TIMEOUT`, `GIT_PROBE_TIMEOUT`,
+`GH_API_TIMEOUT`, `PIP_INDEX_TIMEOUT`, `PIP_NET_TIMEOUT`,
+`PYPI_PROBE_TIMEOUT`, `DOWNLOAD_TIMEOUT`).
 
 Before probing, the installer checks connectivity to the three source
 families (GitHub, PyPI, and the configured apt mirror) and prints the result
@@ -298,9 +307,12 @@ Refreshes tools without leaving the menu:
 | core      | `core update core`                                      |
 | kilocode  | `core update ai --kilocode-cli`                         |
 
-The action uses the menu's current toggles, prints its output, then returns to
-the menu (press 'u' again to re-run, 'q' to leave). It never installs a tool
-that is not already present.
+The action uses the menu's current toggles (in the TUI and the text fallback
+alike), prints its output, then returns to the menu (press 'u' again to
+re-run, 'q' to leave). It never installs a tool that is not already present.
+Afterwards the menu re-probes statuses with a purple "Refreshing status,
+please wait..." notice; only rows whose status changed into installed/broken
+are turned off, so a green row ticked on purpose stays ticked.
 
 Because the action's output is captured and shown only when it finishes, a
 purple "working, please wait" line appears immediately when 's' or 'u' is
@@ -329,10 +341,13 @@ turned off) makes the repositories usable and refreshes them:
 
 1. If no mirror has been chosen yet (no
    `$PREFIX/etc/termux/chosen_mirrors` symlink), it runs `termux-change-repo`
-   so you can pick a group. Unattended runs (no TTY) instead link the
-   bundled default mirror. Without a wired repo the pkg stages fail at curl.
-2. Runs `apt update && apt upgrade -y` so package indexes are current and an
-   older base image is fully upgraded before the tools are installed.
+   so you can pick a group. Unattended runs (`-y`, or no TTY) instead link
+   the bundled default mirror. `-y` never prompts — the mirror picker, rish
+   source menu and kilocode method prompt all take their defaults. Without a
+   wired repo the pkg stages fail at curl.
+2. Runs `apt update && apt full-upgrade -y` (like `pkg upgrade`) so package
+   indexes are current and an older base image is fully upgraded before the
+   tools are installed.
 
 The menu toggle "apt update & upgrade before installing" is on by default.
 
@@ -443,9 +458,10 @@ Bump all of them together if/when changing the script.
   needed because shizuku's `setup.sh` compiles jiter and pydantic-core from
   source (no Android wheels); building them takes several minutes on-device.
 - Re-running is safe; edits you make to `~/.bashrc` are only appended once.
-- Before any rewrite of `~/.bashrc` / `~/.bash_profile`, the installer backs
-  the file up once per run to `<file>.tmx2tm.bak` (overwriting the previous
-  run's backup). Rewrites are validated with `bash -n` first and written back
+- Before any rewrite or append to `~/.bashrc` / `~/.bash_profile`, the
+  installer backs the file up once per run to `<file>.tmx2tm.bak` — but only
+  when it actually changes the file, so a no-op run leaves the previous
+  backup intact. Rewrites are validated with `bash -n` first and written back
   in place, so symlinked dotfiles stay symlinks. To undo: `cp
   ~/.bashrc.tmx2tm.bak ~/.bashrc` (same for `.bash_profile`).
 

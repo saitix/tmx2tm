@@ -35,4 +35,12 @@ setup_stubs() {
     C_HL=""; C_KEY=""; C_ERR=""; C_PURPLE=""; C_YELLOW=""
     TEMP_PATHS=()
     declare -gA RC_BACKED_UP=()
+    # Config constants the functions reference: read the real values from
+    # tmx2tm.sh so tests always match the script instead of a copy.
+    local line
+    line=$(grep '^NEOFETCH_BLOCK_CAP=' "$TMX2TM_SH" | head -1)
+    # shellcheck disable=SC2163
+    [ -n "$line" ] && eval "export $line"
+    TP_WHY_DANGLING=$(grep '^TP_WHY_DANGLING=' "$TMX2TM_SH" | head -1 | cut -d= -f2- | tr -d '"')
+    export TP_WHY_DANGLING
 }

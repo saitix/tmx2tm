@@ -8,6 +8,10 @@ setup() {
     info() { :; }
     warn() { :; }
     record_result() { :; }
+    # comp_status / comp_broken_why read the maps directly (as the real ones
+    # do); the tests set the maps below.
+    comp_status() { printf '%s' "${TP_STATUS[$1]:-missing}"; }
+    comp_broken_why() { printf '%s' "${TP_BROKEN_WHY[$1]:-source gone}"; }
     MENU_CONFIRMED=0
     TP_FORCE=0
 }

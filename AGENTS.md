@@ -39,7 +39,9 @@ Minimal instructions for agents working in this repo.
      (zellij reads `.bashrc` inside login shells), upgrades the legacy
      unguarded form, and REMOVES the snippet from both files when the
      starship binary is gone. Marker: `# Initialize Starship only once,
-     if installed` + `STARSHIP_START_TIME` guard.
+     if installed` + `declare -F starship_precmd` guard (older
+     `STARSHIP_START_TIME` and legacy `if command -v starship` forms are
+     recognized by the strip filter and upgraded).
    - `setup_neofetch_init` syncs its block in `~/.bash_profile` ONLY
      (zellij would re-run a `.bashrc` copy per tab).
    - ALL rc-file rewrites (not just appends) MUST go through `rc_rewrite`
@@ -55,8 +57,9 @@ Minimal instructions for agents working in this repo.
    notices via `announce()`, in-progress sub-statuses via `progress()`
    (purple, info-indented). Static notices stay dim (`info`), results stay
    green (`ok`/`done_step`), warnings yellow/pink (`warn`), errors red
-   (`die`/red menu rows). The one exception: `done_step()` (green `==>`)
-   for the final "Installation complete" header, which is a result, not
+   (`die`/red menu rows). Two explicit exceptions: `done_step()` (green
+   `==>`) for the final "Installation complete" header, and `sync_step()`
+   (cyan `==>`) for the rc-file-sync result header — both are results, not
    progress. Summary section headings use green (`C_OK`); `C_BLUE` stays
    only for the TUI cursor row. Never add a new blue/progress-colored
    helper — reuse these.
@@ -68,9 +71,10 @@ Minimal instructions for agents working in this repo.
    - Green + explicit menu tick = forced reinstall (`MENU_CONFIRMED`
      distinguishes menu ticks from `-y` select-all, where green is skipped).
    - Green + non-menu run = skip. Broken + selected = warn + skip, never die.
-   - Look up state with `comp_status <tag>`, suffix with `comp_suffix <tag>`,
-     color with `menu_item_color <tag>` — never read `PKG_STATUS`/`TP_STATUS`
-     directly outside the probe functions.
+    - Look up state with `comp_status <tag>`, suffix with `comp_suffix <tag>`,
+      color with `menu_item_color <tag>`, broken reason with
+      `comp_broken_why <tag>` — never read `PKG_STATUS`/`TP_STATUS` /
+      `TP_BROKEN_WHY` directly outside the probe functions.
    - 3rd-party probes live in `probe_tp_one` (pip via `pip index versions`,
      git via `ls-remote` + archived API check); `probe_tp_status` runs them
      in parallel. Every network call must use one of the named timeout
@@ -80,11 +84,15 @@ Minimal instructions for agents working in this repo.
      non-menu flow). Red verdicts require reachability: offline means
      installed→current, missing→missing — never broken. Gate new red logic
      on `NET_GITHUB` / `NET_PYPI` accordingly.
-   - EXCEPTION: `dangling_link()` (symlink present, target gone) is broken
-     regardless of network — the local install is at fault, not the source.
-     Report as `[link target missing]`; the install stage must remove the
-     stale link and reinstall instead of dying.
-   - The `u`-action refresh is `refresh_menu_status` (both groups + toggles).
+    - EXCEPTION: `dangling_link()` (symlink present, target gone) is broken
+      regardless of network — the local install is at fault, not the source.
+      Report as `TP_WHY_DANGLING`; `tp_gate` lets this reason proceed so the
+      install stage removes the stale link and reinstalls instead of dying.
+    - The `u`-action refresh is `refresh_menu_status`, gated by
+      `TUI_EXTRA_REFRESH` (only actions that change statuses trigger it; `s`
+      does not) and prints a purple notice first. It forces a row OFF only
+      when its status CHANGED into current/broken — unchanged rows keep the
+      user's toggle.
    - The text fallback menu signals rc 42 after `p`; `show_menu` loops to
      rebuild and re-probe. NEVER re-exec "$0" to reload: under
      `bash <(curl ...)` $0 is an exhausted /dev/fd pipe, so exec runs an
