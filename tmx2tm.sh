@@ -146,7 +146,9 @@ REPO_RISH_INSTALL="https://raw.githubusercontent.com/merbah3266/rish_installer/m
 
 # Network timeouts (seconds): every network call uses one of these — never a
 # literal. Probes run in parallel, so the worst-case menu wait is bounded by
-# the slowest single probe (~GIT_PROBE_TIMEOUT + GH_API_TIMEOUT), not the sum.
+# the formula: NET_CHECK_TIMEOUT + max(GIT_PROBE_TIMEOUT + GH_API_TIMEOUT,
+# PIP_INDEX_TIMEOUT + PIP_NET_TIMEOUT) — with today's values 10 + max(45, 55)
+# = 65 s — not the sum of all probes.
 NET_CHECK_TIMEOUT=10    # check_connectivity curl --max-time
 NET_CONNECT_TIMEOUT=10  # every curl --connect-timeout
 GIT_PROBE_TIMEOUT=30    # timeout around git ls-remote (both call sites)
@@ -281,10 +283,21 @@ KILOCODE_NATIVE=0
 APT_UPGRADE=1     # run apt update & upgrade (and pick a mirror) before pkg stages
 CLEANUP=0         # remove install stubs + caches after installing
 SHOW_MENU=auto   # auto | force | never
+UNATTENDED=0      # 1 with -y/--yes/--no-menu: never prompt, pick defaults
 SAVE_KILO=0
 RESTORE_KILO=0
 KILO_SAVE_PATH="$DEFAULT_KILO_BACKUP"
 KILO_RESTORE_PATH="$DEFAULT_KILO_BACKUP"
+
+# True when this run may show prompts: not -y and stdin (and stdout, where the
+# original checks had it) is a TTY. Used by the mirror picker, rish and
+# kilocode so `-y` in a terminal still runs fully unattended.
+is_interactive() {
+    [ "$UNATTENDED" -eq 0 ] && [ -t 0 ]
+}
+is_interactive_out() {
+    [ "$UNATTENDED" -eq 0 ] && [ -t 0 ] && [ -t 1 ]
+}
 
 # usage() is the source of truth for --help (works under bash <(...) where
 # $0 is an unreadable pipe). Keep the header comment's Usage list in sync.
@@ -318,7 +331,7 @@ for arg in "$@"; do
         --cleanup)            CLEANUP=1 ;;
         --kilocode-native)  KILOCODE_NATIVE=1 ;;
         --menu)             SHOW_MENU=force ;;
-        -y|--yes|--no-menu) SHOW_MENU=never ;;
+        -y|--yes|--no-menu) SHOW_MENU=never; UNATTENDED=1 ;;
         --save-kilo)        SAVE_KILO=1 ;;
         --save-kilo=*)      SAVE_KILO=1; KILO_SAVE_PATH="${arg#*=}" ;;
         --restore-kilo)     RESTORE_KILO=1 ;;
@@ -513,18 +526,37 @@ tp_installed() {
     esac
 }
 
-# Upstream git state for owner/repo: ok | unreachable | archived.
-# Unreachable = `git ls-remote` failed (repo gone, network down, host down).
-# Archived is read from the GitHub API; an API failure (rate limit, offline)
-# skips the archived check instead of crying wolf — reachability already
-# covered the offline case.
-tp_git_repo_state() {
-    GIT_TERMINAL_PROMPT=0 timeout "$GIT_PROBE_TIMEOUT" git ls-remote "https://github.com/$1.git" HEAD >/dev/null 2>&1 \
-        || { echo unreachable; return; }
+# Remote HEAD SHA for owner/repo via one ls-remote call; empty on failure.
+# Kept separate from the archived check so shizuku's diff needs only ONE
+# ls-remote (the shared state helper below reuses this result).
+tp_git_remote_head() {
+    GIT_TERMINAL_PROMPT=0 timeout "$GIT_PROBE_TIMEOUT" \
+        git ls-remote "https://github.com/$1.git" HEAD 2>/dev/null | awk '{print $1}'
+}
+
+# Archived flag from the GitHub API; empty when the API is silent (rate
+# limit, offline) — reachability already covered the offline case.
+tp_git_archived() {
     local archived
     archived=$(curl -fsSL --max-time "$GH_API_TIMEOUT" --connect-timeout "$NET_CONNECT_TIMEOUT" "https://api.github.com/repos/$1" 2>/dev/null \
         | grep -o '"archived": *[a-z]*' | awk '{print $2}')
-    if [ "$archived" = "true" ]; then echo archived; else echo ok; fi
+    [ "$archived" = "true" ] && echo archived
+}
+
+# Upstream git state for owner/repo: ok | unreachable | archived.
+# Unreachable = `git ls-remote` failed (repo gone, network down, host down).
+tp_git_repo_state() {
+    local head
+    head=$(tp_git_remote_head "$1")
+    if [ -z "$head" ]; then
+        echo unreachable
+        return
+    fi
+    if [ -n "$(tp_git_archived "$1")" ]; then
+        echo archived
+    else
+        echo ok
+    fi
 }
 
 # Probe one pip-based tool. Installed version comes from `pip show`, latest
@@ -601,14 +633,14 @@ tp_probe_git() {
             printf 'current\n\n'
             return
         fi
-        remote_head=$(GIT_TERMINAL_PROMPT=0 timeout "$GIT_PROBE_TIMEOUT" git ls-remote "https://github.com/$repo.git" HEAD 2>/dev/null | awk '{print $1}')
+        remote_head=$(tp_git_remote_head "$repo")
         if [ -z "$remote_head" ]; then
             printf 'broken\nsource unreachable\n'
             return
         fi
         local_head=$(git -C "$SHIZUKU_DIR" rev-parse HEAD 2>/dev/null)
-        state="$(tp_git_repo_state "$repo")"
-        if [ "$state" = "archived" ]; then
+        # Reuse the single ls-remote above: only the archived check remains.
+        if [ -n "$(tp_git_archived "$repo")" ]; then
             printf 'broken\narchived\n'
         elif [ -n "$local_head" ] && [ "$local_head" = "$remote_head" ]; then
             printf 'current\n\n'
@@ -760,11 +792,13 @@ rc_rewrite() {
     fi
     rm -f "$tmp"
 }
-# Append a line to ~/.bashrc only if it is not already present.
+# Append a line to ~/.bashrc only if it is not already present. The backup
+# is taken only when something will actually be appended, so no-op runs
+# never overwrite the previous run's .tmx2tm.bak.
 ensure_bashrc_line() {
     local line="$1"
-    rc_backup "$BASHRC"
     if ! grep -qxF "$line" "$BASHRC" 2>/dev/null; then
+        rc_backup "$BASHRC"
         printf '\n%s\n' "$line" >> "$BASHRC"
         info "Added to ~/.bashrc: $line"
     fi
@@ -799,6 +833,9 @@ ensure_bashrc_line() {
 # the terminal (for long actions like update/prereqs), 0/empty = capture and
 # print when done (for short actions like save). Streamed actions run in a
 # subshell so their variable changes do not leak into the menu state.
+# TUI_EXTRA_REFRESH is an optional parallel array: 1 = run TUI_REFRESH_FN
+# after this action (only actions that change statuses, e.g. u/p; s = 0 so a
+# save never triggers the silent re-probe).
 # Refresh-hook contract (TUI_REFRESH_FN): the hook runs in the menu's scope
 # and may read/write these tui_checklist locals: n, kinds, tags, descs,
 # states. It may also modify TUI_EXTRA_* to add/drop shortcuts; after it
@@ -809,6 +846,7 @@ TUI_EXTRA_BUSY=()
 TUI_EXTRA_FNS=()
 TUI_EXTRA_STYLE=()
 TUI_EXTRA_STREAM=()
+TUI_EXTRA_REFRESH=()
 # TUI_ITEM_BULK is an optional parallel array (one entry per item, separators
 # get an empty entry): 1 = the `a` bulk key may turn this row on. Component
 # rows use menu_default_state (green/broken = 0, missing/yellow = 1) so bulk
@@ -1005,10 +1043,18 @@ tui_checklist() {
                     printf '\033[%dA\033[J' "$((ol + 1))"
                     tput civis 2>/dev/null || true
                 fi
-                # Let the caller refresh per-item state (e.g. pkg status colors
-                # after the 'u' update action) before the menu redraws.
-                if [ -n "$TUI_REFRESH_FN" ]; then
+                # Refresh per-item state (e.g. pkg status colors after 'u')
+                # only for actions that change statuses (TUI_EXTRA_REFRESH);
+                # 's' (save) changes nothing and must not trigger a re-probe.
+                local do_refresh=0
+                [ "${#TUI_EXTRA_REFRESH[@]}" -gt "$action" ] && do_refresh="${TUI_EXTRA_REFRESH[$action]:-0}"
+                if [ "$do_refresh" = "1" ] && [ -n "$TUI_REFRESH_FN" ]; then
+                    # The refresh (connectivity + probes) can take a while and
+                    # prints its own lines: announce it, run it, then clear
+                    # the screen so the redraw starts from a known state.
+                    announce "Refreshing status, please wait..."
                     "$TUI_REFRESH_FN"
+                    clear 2>/dev/null || printf '\033[2J\033[H'
                 fi
                 # The refresh may have added/dropped shortcuts: recompute the
                 # redraw height before rendering again.
@@ -1196,6 +1242,16 @@ MENU_OPTIONS=(
     "cleanup|OPTION: cleanup install stubs + caches after installing"
 )
 
+# Bulk-key eligibility, one rule for both menus: components qualify when
+# menu_default_state is on (missing/yellow); options qualify when currently
+# on. Green/broken rows never qualify, so `a` cannot mass-reinstall.
+menu_bulk_eligible() {
+    case " ${ALL_COMPONENTS[*]} " in
+        *" $1 "*) [ "$(menu_default_state "$1")" = "on" ] ;;
+        *)        [ "$(menu_option_state "$1")" = "on" ] ;;
+    esac
+}
+
 refresh_menu_colors() {
     local i=0
     TUI_ITEM_COLOR=()
@@ -1203,13 +1259,13 @@ refresh_menu_colors() {
     TUI_ITEM_COLOR[i]=""; TUI_ITEM_BULK[i]=""; ((i++)) || true                 # sep: 3rd-party tools
     for _c in "${THIRD_PARTY_COMPONENTS[@]}"; do
         TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"
-        [ "$(menu_default_state "$_c")" = "on" ] && TUI_ITEM_BULK[i]="1" || TUI_ITEM_BULK[i]="0"
+        TUI_ITEM_BULK[i]="$(menu_bulk_eligible "$_c" && echo 1 || echo 0)"
         ((i++)) || true
     done
     TUI_ITEM_COLOR[i]=""; TUI_ITEM_BULK[i]=""; ((i++)) || true                 # sep: pkg tools
     for _c in "${PKG_TOOL_COMPONENTS[@]}"; do
         TUI_ITEM_COLOR[i]="$(menu_item_color "$_c")"
-        [ "$(menu_default_state "$_c")" = "on" ] && TUI_ITEM_BULK[i]="1" || TUI_ITEM_BULK[i]="0"
+        TUI_ITEM_BULK[i]="$(menu_bulk_eligible "$_c" && echo 1 || echo 0)"
         ((i++)) || true
     done
     TUI_ITEM_COLOR[i]=""; TUI_ITEM_BULK[i]=""; ((i++)) || true                 # sep: options
@@ -1217,39 +1273,49 @@ refresh_menu_colors() {
     for _o in "${MENU_OPTIONS[@]}"; do
         _tag="${_o%%|*}"
         TUI_ITEM_COLOR[i]=""
-        # Options keep today's toggle behavior in bulk: eligible when on.
-        [ "$(menu_option_state "$_tag")" = "on" ] && TUI_ITEM_BULK[i]="1" || TUI_ITEM_BULK[i]="0"
+        TUI_ITEM_BULK[i]="$(menu_bulk_eligible "$_tag" && echo 1 || echo 0)"
         ((i++)) || true
     done
 }
 
 # Re-probe all statuses and rebuild row colors, suffixes, and toggles. Wired
 # as TUI_REFRESH_FN so the menu refreshes right after an action without
-# leaving it. Green tools go off (nothing to do), broken tools go off
-# (nothing can be done); missing/yellow rows keep the user's toggle.
+# leaving it. A row is forced OFF only when its status CHANGED into current
+# or broken; rows whose status didn't change keep the user's toggle (a green
+# row ticked on purpose for a reinstall stays ticked).
 # Refresh-hook contract (see the TUI_EXTRA_STREAM comment): this runs in
 # tui_checklist's scope and may read/write n, kinds, tags, descs, states,
 # plus the TUI_EXTRA_* arrays; tui_checklist recomputes extra/lines after.
 # shellcheck disable=SC2329  # invoked via TUI_REFRESH_FN
 refresh_menu_status() {
+    # Snapshot statuses so only real changes force toggles off.
+    local -A before=()
+    local i st
+    for ((i = 0; i < n; i++)); do
+        [ "${kinds[$i]}" = item ] || continue
+        case " ${ALL_COMPONENTS[*]} " in
+            *" ${tags[i]} "*) before[${tags[i]}]="$(comp_status "${tags[i]}")" ;;
+        esac
+    done
     check_connectivity
     probe_pkg_status
     probe_tp_status
     refresh_menu_colors
     # Prerequisites now present: drop the 'p' shortcut (it did its job).
     if ! prereqs_missing; then
-        local ni nk=() nd=() nb=() nf=() ns=() nt=()
+        local ni nk=() nd=() nb=() nf=() ns=() nt=() nr=()
         for ((ni = 0; ni < ${#TUI_EXTRA_KEYS[@]}; ni++)); do
             [ "${TUI_EXTRA_KEYS[$ni]}" = "p" ] && continue
             nk+=("${TUI_EXTRA_KEYS[$ni]}"); nd+=("${TUI_EXTRA_DESCS[$ni]}")
             nb+=("${TUI_EXTRA_BUSY[$ni]}"); nf+=("${TUI_EXTRA_FNS[$ni]}")
             ns+=("${TUI_EXTRA_STYLE[$ni]}"); nt+=("${TUI_EXTRA_STREAM[$ni]:-0}")
+            nr+=("${TUI_EXTRA_REFRESH[$ni]:-0}")
         done
         TUI_EXTRA_KEYS=("${nk[@]}"); TUI_EXTRA_DESCS=("${nd[@]}")
         TUI_EXTRA_BUSY=("${nb[@]}"); TUI_EXTRA_FNS=("${nf[@]}")
         TUI_EXTRA_STYLE=("${ns[@]}"); TUI_EXTRA_STREAM=("${nt[@]}")
+        TUI_EXTRA_REFRESH=("${nr[@]}")
     fi
-    local i st
     for ((i = 0; i < n; i++)); do
         [ "${kinds[$i]}" = item ] || continue
         case " ${ALL_COMPONENTS[*]} " in
@@ -1257,7 +1323,11 @@ refresh_menu_status() {
                 descs[i]="${COMP_DESC[${tags[i]}]}$(comp_suffix "${tags[i]}")"
                 st="$(comp_status "${tags[i]}")"
                 if [ "$st" = "current" ] || [ "$st" = "broken" ]; then
-                    states[i]="off"
+                    # Only force off when the status actually changed into
+                    # this state; an unchanged row keeps the user's toggle.
+                    if [ "${before[${tags[i]}]:-}" != "$st" ]; then
+                        states[i]="off"
+                    fi
                 fi
                 ;;
         esac
@@ -1310,6 +1380,7 @@ show_menu() {
         TUI_EXTRA_FNS=("menu_save_kilo" "menu_update_tools")
         TUI_EXTRA_STYLE=("" "")
         TUI_EXTRA_STREAM=(0 1)
+        TUI_EXTRA_REFRESH=(0 1)
         if prereqs_missing; then
             TUI_EXTRA_KEYS+=("p")
             TUI_EXTRA_DESCS+=("install prerequisites (recommended on fresh Termux)")
@@ -1319,6 +1390,7 @@ show_menu() {
             # render the whole line in bold white so it stands out.
             TUI_EXTRA_STYLE+=("$C_KEY")
             TUI_EXTRA_STREAM+=(1)
+            TUI_EXTRA_REFRESH+=(1)
         fi
         # Status colors for pkg rows (green = installed+latest, yellow =
         # installed+upgradable, default = missing); refreshed after 'u'.
@@ -1340,7 +1412,7 @@ show_menu() {
             info "Falling back to a plain text menu"
             info "Tip: zoom out / rotate to landscape for more rows, then press 'r' to reload the full menu"
             TUI_EXTRA_KEYS=(); TUI_EXTRA_DESCS=(); TUI_EXTRA_BUSY=(); TUI_EXTRA_FNS=()
-            TUI_EXTRA_STYLE=(); TUI_EXTRA_STREAM=()
+            TUI_EXTRA_STYLE=(); TUI_EXTRA_STREAM=(); TUI_EXTRA_REFRESH=()
             TUI_ITEM_COLOR=(); TUI_REFRESH_FN=""; TUI_LEGEND=""
             show_text_menu "${items[@]}"
             text_rc=$?
@@ -1365,6 +1437,7 @@ show_menu() {
         TUI_EXTRA_FNS=()
         TUI_EXTRA_STYLE=()
         TUI_EXTRA_STREAM=()
+        TUI_EXTRA_REFRESH=()
         TUI_ITEM_COLOR=()
         TUI_REFRESH_FN=""
         TUI_LEGEND=""
@@ -1448,16 +1521,13 @@ show_text_menu() {
             '') break ;;
             q|Q) info "Cancelled."; exit 130 ;;
             a|A)
-                # Same bulk rule as the TUI: "all on" ticks only rows whose
-                # default is on (missing/yellow + options on); green/broken
-                # stay as they are. "All off" clears every row.
+                # Same bulk rule as the TUI (menu_bulk_eligible): "all on"
+                # ticks only eligible rows (missing/yellow + options on);
+                # green/broken stay as they are. "All off" clears every row.
                 local all_on=1
                 for ((i = 0; i < ${#tags[@]}; i++)); do
                     [ -n "${tags[$i]}" ] || continue
-                    case " ${ALL_COMPONENTS[*]} " in
-                        *" ${tags[$i]} "*)
-                            [ "$(menu_default_state "${tags[$i]}")" = "on" ] || continue ;;
-                    esac
+                    menu_bulk_eligible "${tags[$i]}" || continue
                     [ "${states[$i]}" = on ] || all_on=0
                 done
                 for ((i = 0; i < ${#tags[@]}; i++)); do
@@ -1466,21 +1536,28 @@ show_text_menu() {
                         states[i]="off"
                         continue
                     fi
-                    case " ${ALL_COMPONENTS[*]} " in
-                        *" ${tags[$i]} "*)
-                            [ "$(menu_default_state "${tags[$i]}")" = "on" ] || continue ;;
-                    esac
+                    menu_bulk_eligible "${tags[$i]}" || continue
                     states[i]="on"
                 done
                 ;;
             s|S) menu_save_kilo ;;
             u|U)
                 menu_update_tools_no_tui
-                # Refresh suffixes + toggles like refresh_menu_status.
+                # Refresh suffixes + toggles with the same rules as
+                # refresh_menu_status: notice first, snapshot statuses, then
+                # force off only rows whose status CHANGED into current/broken.
+                announce "Refreshing status, please wait..."
+                local -A _before=()
+                local ri st
+                for ((ri = 0; ri < ${#tags[@]}; ri++)); do
+                    [ -n "${tags[$ri]}" ] || continue
+                    case " ${ALL_COMPONENTS[*]} " in
+                        *" ${tags[$ri]} "*) _before[${tags[$ri]}]="$(comp_status "${tags[$ri]}")" ;;
+                    esac
+                done
                 check_connectivity
                 probe_pkg_status
                 probe_tp_status
-                local ri st
                 for ((ri = 0; ri < ${#tags[@]}; ri++)); do
                     [ -n "${tags[$ri]}" ] || continue
                     case " ${ALL_COMPONENTS[*]} " in
@@ -1488,7 +1565,9 @@ show_text_menu() {
                             descs[ri]="${COMP_DESC[${tags[$ri]}]}$(comp_suffix "${tags[$ri]}")"
                             st="$(comp_status "${tags[$ri]}")"
                             if [ "$st" = "current" ] || [ "$st" = "broken" ]; then
-                                states[ri]="off"
+                                if [ "${_before[${tags[$ri]}]:-}" != "$st" ]; then
+                                    states[ri]="off"
+                                fi
                             fi ;;
                     esac
                 done
@@ -1625,7 +1704,7 @@ ensure_termux_mirror() {
     [ -e "$chosen" ] && return 0
 
     warn "No Termux repository mirror is selected yet"
-    if [ -t 0 ] && [ -t 1 ] && command -v termux-change-repo >/dev/null 2>&1; then
+    if is_interactive_out && command -v termux-change-repo >/dev/null 2>&1; then
         progress "Running termux-change-repo (pick a mirror group)"
         termux-change-repo || warn "termux-change-repo did not complete; continuing"
     fi
@@ -1646,12 +1725,14 @@ update_apt() {
 
     ensure_termux_mirror
 
-    step "Running apt update & upgrade"
+    step "Running apt update & full upgrade"
     DEBIAN_FRONTEND=noninteractive apt update -y \
         || warn "apt update reported errors; continuing anyway"
-    pkg_noninteractive apt upgrade -y \
-        || warn "apt upgrade reported errors; continuing anyway"
-    ok "apt update & upgrade finished"
+    # full-upgrade (like pkg upgrade): plain upgrade holds back packages
+    # whose dependencies changed, leaving the base image half-updated.
+    pkg_noninteractive apt full-upgrade -y \
+        || warn "apt full-upgrade reported errors; continuing anyway"
+    ok "apt update & full upgrade finished"
 }
 
 install_base_deps() {
@@ -2171,8 +2252,9 @@ install_rish() {
     fi
 
     # Interactive menu picks the APK source; silent mode uses the recommended
-    # default (extract from the installed Shizuku app, else latest GitHub release).
-    if [ ! -t 0 ]; then
+    # default (extract from the installed Shizuku app, else latest GitHub
+    # release). -y also forces silent: an unattended run must not prompt.
+    if ! is_interactive; then
         progress "Running rish installer silently (source: default)"
         flags+=(--silent --source default)
     else
@@ -2283,7 +2365,7 @@ install_kilocode() {
 
     # core's installer shows an interactive menu (native / native+proot / proot-distro).
     # Option 0 ("glibc (recommended)") is the default; an empty keypress (Enter) selects it.
-    if [ "$KILOCODE_NATIVE" -eq 1 ] || [ ! -t 0 ]; then
+    if [ "$KILOCODE_NATIVE" -eq 1 ] || ! is_interactive; then
         progress "Selecting recommended 'glibc (recommended)' method non-interactively"
         if ! printf '\n' | TERM="${TERM:-xterm-256color}" core install ai --kilocode-cli; then
             warn "core install ai --kilocode-cli failed; continuing"
