@@ -21,12 +21,13 @@ Minimal instructions for agents working in this repo.
    component, new flag, changed stage, version bump) MUST update `README.md`
    in the same commit: component tables, relevant sections, and the version
    note at the top.
-2. **Version rule.** The version lives in THREE places and all must match:
+   CHANGELOG.md is also to be updated acording to its rules (if and how)
+3. **Version rule.** The version lives in THREE places and all must match:
    - script file header comment (`# Version: X.Y`)
    - `SCRIPT_VERSION="X.Y"` in the config block
    - `**Version: X.Y.**` note at the top of `README.md`
    Bump it on every user-visible change.
-3. **Adding a pkg tool.** A new entry needs ALL of these, in order:
+4. **Adding a pkg tool.** A new entry needs ALL of these, in order:
    - file header comment list (`#   pkg tools:`), alphabetical
    - `PKG_TOOL_COMPONENTS=(...)` array, alphabetical
    - `PKG_COMPONENT[<tag>]=<pkg name(s)>` mapping
@@ -36,11 +37,11 @@ Minimal instructions for agents working in this repo.
    - `COMP_DESC[<tag>]` menu description
    - `COMP_HINT[<tag>]` summary-hint (what to run after install)
    - `README.md` pkg-tools table row + any stage-specific section
-4. **Verify before committing:** run `bash -n tmx2tm.sh`
+5. **Verify before committing:** run `bash -n tmx2tm.sh`
    (syntax), `shellcheck tmx2tm.sh` (lint; must be clean), and `bats tests/`
    (rc-file filter regression tests). Any change to an rc-file filter needs
    a matching test case.
-5. **`.bashrc` rule.** Never append blindly — always use the existing
+6. **`.bashrc` rule.** Never append blindly — always use the existing
    `ensure_bashrc_line` helper so re-runs stay idempotent.
    - `setup_starship_init` is the exception pattern: it syncs the guarded
      snippet in BOTH `~/.bash_profile` and `~/.bashrc` on EVERY run
@@ -55,12 +56,12 @@ Minimal instructions for agents working in this repo.
    - ALL rc-file rewrites (not just appends) MUST go through `rc_rewrite`
      (with `rc_backup` snapshots to `<file>.tmx2tm.bak`): it validates the
      result with `bash -n` and writes back in place so symlinks survive.
-6. **Target:** Termux on Android (aarch64) only. No `dialog`/`gum`
+7. **Target:** Termux on Android (aarch64) only. No `dialog`/`gum`
    dependencies; the menu is pure bash. Keep `$PREFIX`, `$HOME`, `pkg`
    assumptions intact.
-7. **Commit style:** short imperative subject line (< 72 chars), blank line,
+8. **Commit style:** short imperative subject line (< 72 chars), blank line,
    then a body explaining what and why.
-8. **Color rule.** Every displayed action or status that shows something in
+9. **Color rule.** Every displayed action or status that shows something in
    progress is PURPLE: stage headers via `step()` (purple `==>`), wait
    notices via `announce()`, in-progress sub-statuses via `progress()`
    (purple, info-indented). Static notices stay dim (`info`), results stay
@@ -71,7 +72,7 @@ Minimal instructions for agents working in this repo.
    progress. Summary section headings use green (`C_OK`); `C_BLUE` stays
    only for the TUI cursor row. Never add a new blue/progress-colored
    helper — reuse these.
-9. **Unified status model.** Both component groups share one state machine —
+10. **Unified status model.** Both component groups share one state machine —
    `current` (green, `[installed]`), `outdated` (yellow, `[update+]`),
    `missing` (dim, no suffix), `broken` (red, `[reason]`, 3rd-party only).
    - Green and broken rows default to OFF in the menu (`menu_default_state`);
@@ -107,6 +108,6 @@ Minimal instructions for agents working in this repo.
      empty script and exits silently. In-process loops only.
    - Text-menu `r` (zoom out and reload) signals rc 43 for the same loop;
      a reload is a fresh re-probed look, not a resume of picked toggles.
-10. **Auto-commit.** After any addition/correction/removal to the repo,
+11. **Auto-commit.** After any addition/correction/removal to the repo,
     commit the changes with a short/brief summary (per the commit style
     above). Never `git push` — pushing is always done manually.
