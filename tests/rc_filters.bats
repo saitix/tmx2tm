@@ -52,9 +52,50 @@ fi
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
     bash -n "$BATS_TMPDIR/t/out"
-    grep -q 'echo a' "$BATS_TMPDIR/t/out"
-    grep -q 'echo b' "$BATS_TMPDIR/t/out"
-    ! grep -q 'Starship' "$BATS_TMPDIR/t/out"
+    cat >"$BATS_TMPDIR/t/expected" <<'EXPECTED'
+if [ -f ~/a ]; then
+  echo a
+fi
+if [ -f ~/b ]; then
+  echo b
+fi
+EXPECTED
+    diff "$BATS_TMPDIR/t/expected" "$BATS_TMPDIR/t/out"
+}
+
+@test "starship: blank runs and whitespace lines kept verbatim" {
+    input='echo one
+
+
+echo two
+
+echo three
+# Initialize Starship only once, if installed
+if [ -z "$STARSHIP_START_TIME" ] && command -v starship >/dev/null 2>&1; then
+    eval "$(starship init bash)"
+fi
+echo four
+
+   
+echo five
+'
+    run filter "$input" _starship_strip_filter
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
+    bash -n "$BATS_TMPDIR/t/out"
+    cat >"$BATS_TMPDIR/t/expected" <<'EXPECTED'
+echo one
+
+
+echo two
+
+echo three
+echo four
+
+   
+echo five
+EXPECTED
+    diff "$BATS_TMPDIR/t/expected" "$BATS_TMPDIR/t/out"
 }
 
 @test "starship: edited body keeps user lines" {
@@ -215,6 +256,51 @@ echo bottom
     once=$(filter "$input" _neofetch_strip_filter)
     twice=$(filter "$once" _neofetch_strip_filter)
     [ "$once" = "$twice" ]
+}
+
+@test "neofetch: legacy block then closed block keeps user lines" {
+    input="$NEO_START
+if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
+  neofetch --off
+export USERVAR=1
+alias keep=me
+$NEO_START
+if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
+  neofetch --off
+fi
+$NEO_END
+"
+    run filter "$input" _neofetch_strip_filter
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
+    grep -q 'USERVAR=1' "$BATS_TMPDIR/t/out"
+    grep -q 'alias keep=me' "$BATS_TMPDIR/t/out"
+    ! grep -q 'neofetch on Termux' "$BATS_TMPDIR/t/out"
+    ! grep -q 'neofetch --off' "$BATS_TMPDIR/t/out"
+    bash -n "$BATS_TMPDIR/t/out"
+}
+
+@test "neofetch: two closed blocks back to back both removed" {
+    input="echo before
+$NEO_START
+if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
+  neofetch --off
+fi
+$NEO_END
+$NEO_START
+if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
+  neofetch --off
+fi
+$NEO_END
+echo after
+"
+    run filter "$input" _neofetch_strip_filter
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
+    grep -q 'echo before' "$BATS_TMPDIR/t/out"
+    grep -q 'echo after' "$BATS_TMPDIR/t/out"
+    ! grep -q 'neofetch on Termux' "$BATS_TMPDIR/t/out"
+    bash -n "$BATS_TMPDIR/t/out"
 }
 
 # ---------------- rc_rewrite ----------------

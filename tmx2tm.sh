@@ -156,6 +156,11 @@ PIP_NET_TIMEOUT=20      # pip's own --timeout
 PYPI_PROBE_TIMEOUT=15   # curl to pypi.org/simple/<pkg>/ --max-time
 DOWNLOAD_TIMEOUT=120    # installer downloads (rish, core) --max-time
 
+# Broken reason for a dangling install symlink (link present, target gone).
+# Special-cased in tp_gate: unlike a dead upstream, the fix is local —
+# remove the link and rerun the installer — so the install stage proceeds.
+TP_WHY_DANGLING="link target missing"
+
 SHIZUKU_DIR="$HOME/termux-shizuku-tools"
 BASHRC="$HOME/.bashrc"
 BASH_PROFILE="$HOME/.bash_profile"
@@ -633,7 +638,7 @@ probe_tp_one() {
     case "$1" in
         core)
             if dangling_link "$PREFIX/bin/core"; then
-                printf 'broken\nlink target missing\n'
+                printf 'broken\n%s\n' "$TP_WHY_DANGLING"
                 return
             fi
             tp_probe_git "$1" ;;
@@ -702,6 +707,14 @@ tp_gate() {
             record_result "$tag" skipped "already installed (latest)"
             return 1 ;;
         broken)
+            # A dangling install link is a LOCAL fault the install stage can
+            # repair itself (remove the link, rerun the installer), so it
+            # proceeds instead of skipping. Any other reason (archived,
+            # unreachable) is a dead source: warn and skip.
+            if [ "${TP_BROKEN_WHY[$tag]:-}" = "$TP_WHY_DANGLING" ]; then
+                info "'$tag' has a stale link ($TP_WHY_DANGLING); it will be replaced"
+                return 0
+            fi
             warn "'$tag' skipped (${TP_BROKEN_WHY[$tag]:-source gone})"
             record_result "$tag" broken "${TP_BROKEN_WHY[$tag]:-source gone}"
             return 1 ;;
@@ -1712,8 +1725,19 @@ _starship_strip_filter() {
                 || line == "    eval \"$(starship init bash)\"" \
                 || line == "fi")
         }
+        function flush_blanks(all,   i, upto) {
+            # Print pending blank lines verbatim. With all=0 (a marker line
+            # follows), drop only the LAST pending blank — the separator the
+            # installer wrote before the marker; earlier blanks are user
+            # content and survive byte-for-byte.
+            upto = nb
+            if (!all && upto > 0) upto--
+            for (i = 0; i < upto; i++) print blanks[i]
+            nb = 0
+        }
         $0 == "# Initialize Starship only once, if installed" || $0 == "# Initialize Starship only if installed" {
-            inb=1; n=0; have_blank=0; next
+            flush_blanks(0)
+            inb=1; n=0; next
         }
         inb {
             if (is_body($0)) {
@@ -1726,9 +1750,9 @@ _starship_strip_filter() {
             print
             next
         }
-        /^[[:space:]]*$/ { have_blank=1; next }
-        { if (have_blank) { print ""; have_blank=0 } print }
-        END { if (!inb && have_blank) print "" }
+        /^[[:space:]]*$/ { blanks[nb++]=$0; next }
+        { flush_blanks(1); print }
+        END { flush_blanks(1) }
     '
 }
 
@@ -1817,7 +1841,13 @@ _neofetch_strip_filter() {
             # End marker too far: not our block — keep everything.
             print s; for (i=0;i<n;i++) print buf[i]; inb=0; n=0
         }
-        $0 == s { inb=1; n=0; next }
+        $0 == s {
+            # A second start marker while a block is open (legacy unclosed
+            # block followed by a proper one): flush the open buffer with
+            # the same rule as at end of file, then start the new block.
+            if (inb) flush_legacy()
+            inb=1; n=0; next
+        }
         inb {
             buf[n++]=$0
             if ($0 == e) {
@@ -1871,7 +1901,13 @@ setup_neofetch_init() {
         info "Neofetch init already present in $f"
     else
         if [ -f "$f" ] && grep -qxF "$start_marker" "$f" 2>/dev/null; then
-            rc_rewrite "$f" _neofetch_strip_filter || true
+            # An unclosed/legacy block: try to clean it first. If the rewrite
+            # is refused (filter output failed bash -n), leave the file as it
+            # was — appending would stack a second block on the broken one.
+            if ! rc_rewrite "$f" _neofetch_strip_filter; then
+                warn "Could not clean the existing neofetch block in $f; leaving it untouched"
+                return 0
+            fi
         else
             rc_backup "$f"
         fi
