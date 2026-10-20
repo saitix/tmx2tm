@@ -6,6 +6,14 @@ Minimal instructions for agents working in this repo.
 
 - `tmx2tm.sh` — the installer (single bash file, `#!/data/data/com.termux/files/usr/bin/bash`).
 - `README.md` — full user documentation. **Single source of truth for docs.**
+- `CHANGELOG.md` — notable changes per release (Keep a Changelog format).
+  **Update it in the same commit as any user-visible change:** new features
+  go under `Added`, behavior changes under `Changed`, phased-out features
+  under `Deprecated`, deleted features under `Removed`, bug fixes under
+  `Fixed`, vulnerabilities under `Security`. Unreleased work accumulates in
+  the `[Unreleased]` section at the top; it moves into a versioned section
+  on release. Never edit a shipped version section to add new entries —
+  only to correct a factual error about that release.
 
 ## Rules
 
