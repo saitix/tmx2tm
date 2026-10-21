@@ -32,9 +32,9 @@
 #     bat                    (cat clone with syntax highlighting)
 #     dig                    (DNS lookup, from dnsutils)
 #     elinks                 (text-mode web browser)
+#     fastfetch              (system info)
 #     golang                 (Go toolchain; adds $GOPATH/bin to PATH in ~/.bashrc)
 #     mc                     (Midnight Commander file manager)
-#     neofetch               (system info)
 #     ranger                 (console file manager)
 #     rust                   (Rust toolchain; builds jiter/pydantic-core for shizuku)
 #     ShellCheck             (shell script static analysis)
@@ -167,10 +167,18 @@ DOWNLOAD_TIMEOUT=120    # installer downloads (rish, core) --max-time
 # remove the link and rerun the installer — so the install stage proceeds.
 TP_WHY_DANGLING="link target missing"
 
-# Maximum number of BODY lines between the neofetch start/end markers for the
-# block to count as ours; beyond this the end marker is assumed to belong to
-# something else and the file is left untouched.
-NEOFETCH_BLOCK_CAP=20
+# Login-time info snippet. fastfetch owns the marker block in ~/.bash_profile;
+# FASTFETCH_BLOCK_CAP bounds the body lines between its markers. The NEOFETCH_*
+# pair is the v0.9 neofetch block, removed on migration. The *_SNIPPET_RE
+# patterns match the snippet's own body lines and are used only to recognise
+# an unclosed (legacy) block.
+FASTFETCH_START='# >>> fastfetch on Termux start >>>'
+FASTFETCH_END='# <<< fastfetch on Termux start <<<'
+FASTFETCH_BLOCK_CAP=20
+FASTFETCH_SNIPPET_RE='^if .*fastfetch|fastfetch -l|^fi$'
+NEOFETCH_LEGACY_START='# >>> neofetch on Termux start >>>'
+NEOFETCH_LEGACY_END='# <<< neofetch on Termux start <<<'
+NEOFETCH_SNIPPET_RE='^if .*neofetch|neofetch --off|^fi$|NEOFETCH_SHOWN|^neofetch$'
 
 SHIZUKU_DIR="$HOME/termux-shizuku-tools"
 BASHRC="$HOME/.bashrc"
@@ -187,7 +195,7 @@ BASE_PKG_DEPS=(
 # Selectable components: 3rd-party tools, then pkg tools. Each group is
 # alphabetical. The menu renders a separator header before each group.
 THIRD_PARTY_COMPONENTS=(copyparty core kilocode pydf rish shizuku ytdlp)
-PKG_TOOL_COMPONENTS=(bat dig elinks golang mc neofetch ranger rust shellcheck sqlite ssh starship telnet uv zellij)
+PKG_TOOL_COMPONENTS=(bat dig elinks fastfetch golang mc ranger rust shellcheck sqlite ssh starship telnet uv zellij)
 ALL_COMPONENTS=("${THIRD_PARTY_COMPONENTS[@]}" "${PKG_TOOL_COMPONENTS[@]}")
 
 # Components that are simple pkg packages -> pkg name(s). A value may list more
@@ -196,7 +204,7 @@ declare -A PKG_COMPONENT=(
     [uv]=uv
     [bat]=bat
     [zellij]=zellij
-    [neofetch]=neofetch
+    [fastfetch]=fastfetch
     [mc]=mc
     [dig]=dnsutils
     [telnet]=inetutils
@@ -236,7 +244,7 @@ declare -A COMP_DESC=(
     [elinks]="elinks - text-mode web browser (pkg)"
     [golang]="golang - Go toolchain (pkg; adds \$GOPATH/bin to PATH)"
     [mc]="mc - Midnight Commander (pkg)"
-    [neofetch]="neofetch - system info (pkg)"
+    [fastfetch]="fastfetch - system info (pkg)"
     [ranger]="ranger - console file manager (pkg)"
     [rust]="rust - Rust toolchain (builds jiter/pydantic-core for shizuku)"
     [shellcheck]="shellcheck - shell script static analysis (pkg)"
@@ -260,7 +268,7 @@ declare -A COMP_HINT=(
     [elinks]="elinks <url>"
     [golang]="go version"
     [mc]="mc"
-    [neofetch]="neofetch"
+    [fastfetch]="fastfetch"
     [ranger]="ranger"
     [rust]="rustc --version"
     [shellcheck]="shellcheck --version"
@@ -1921,104 +1929,121 @@ setup_starship_init() {
     ok "starship -> $(command -v starship)"
 }
 
-# Neofetch auto-run snippet, kept in sync in ~/.bash_profile ONLY (not
-# ~/.bashrc: zellij sources .bashrc for every pane/tab, so a .bashrc copy
-# would re-run neofetch on each new tab; .bash_profile runs once per login
-# shell, which is exactly the desired frequency — no guard variable needed).
-# Same pattern as setup_starship_init otherwise: binary present -> snippet
-# ensured; binary missing -> snippet removed (from .bash_profile AND any
-# stale copy in .bashrc). Also repairs the legacy variant found in the wild,
-# which lacks the closing `fi`.
-# Filter: drop the neofetch block as one unit whenever start AND end markers
-# match (body length up to NEOFETCH_BLOCK_CAP lines, to avoid swallowing a
-# file where the end marker belongs to something far away; beyond the cap the
-# file is left untouched). Only when NO end marker follows does the legacy
-# fallback apply: drop the start marker plus known snippet lines
-# (if/neofetch/fi/NEOFETCH_SHOWN), stopping at the first unrelated line.
+# Fastfetch login snippet (replaces the v0.9 neofetch snippet), kept in sync in
+# ~/.bash_profile ONLY: zellij re-sources ~/.bashrc for every pane/tab, so a
+# .bashrc copy would re-run it on each new tab; ~/.bash_profile runs once per
+# login shell. Sync rule, same shape as the starship one:
+#   fastfetch present            -> block ensured in ~/.bash_profile
+#   fastfetch absent             -> block removed from both rc files
+#   v0.9 neofetch block (legacy) -> always removed: neofetch is no longer managed
+# The package itself is never uninstalled here.
+
+# Filter: drop one marker-delimited block. Reads stdin, writes stdout.
+#   $1 start marker, $2 end marker, $3 body-line cap, $4 ERE for the snippet's
+#   own body lines (used only for an unclosed block).
+# A closed block (start..end with at most cap body lines) is dropped whole. A
+# second start marker, or end of file, while a block is open means an unclosed
+# legacy block: its leading snippet lines are dropped and everything after them
+# is kept. An end marker beyond the cap means it belongs to something else: the
+# file is left untouched.
 # shellcheck disable=SC2329  # invoked via rc_rewrite
-_neofetch_strip_filter() {
-    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' -v cap="$NEOFETCH_BLOCK_CAP" '
-        function is_snippet(line) {
-            return (line ~ /^if .*neofetch/ || line ~ /neofetch --off/ \
-                || line == "fi" || line ~ /NEOFETCH_SHOWN/ || line == "neofetch")
-        }
+_block_strip_filter() {
+    awk -v s="$1" -v e="$2" -v cap="$3" -v snip="$4" '
         function flush_legacy(   i, start) {
             start = 0
-            while (start < n && is_snippet(buf[start])) start++
-            for (i=start;i<n;i++) print buf[i]
-            inb=0; n=0
+            while (start < n && buf[start] ~ snip) start++
+            for (i = start; i < n; i++) print buf[i]
+            inb = 0; n = 0
         }
         function flush_far(   i) {
-            # End marker too far: not our block — keep everything.
-            print s; for (i=0;i<n;i++) print buf[i]; inb=0; n=0
+            print s
+            for (i = 0; i < n; i++) print buf[i]
+            inb = 0; n = 0
         }
         $0 == s {
-            # A second start marker while a block is open (legacy unclosed
-            # block followed by a proper one): flush the open buffer with
-            # the same rule as at end of file, then start the new block.
             if (inb) flush_legacy()
-            inb=1; n=0; next
+            inb = 1; n = 0; next
         }
         inb {
-            buf[n++]=$0
+            buf[n++] = $0
             if ($0 == e) {
-                # Closed block within the cap: drop it (n counts the end
-                # marker line, so the cap on body lines is cap + 1).
-                if (n <= cap + 1) { inb=0; n=0; next }
+                if (n <= cap + 1) { inb = 0; n = 0; next }
                 flush_far(); next
             }
-            if (n > cap + 1) { flush_far(); next }
+            if (n > cap + 1) flush_far()
             next
         }
         { print }
         END { if (inb) flush_legacy() }
     '
 }
-_neofetch_has_closed_block() {
-    awk -v s='# >>> neofetch on Termux start >>>' -v e='# <<< neofetch on Termux start <<<' -v cap="$NEOFETCH_BLOCK_CAP" '
-        $0==s{inb=1; n=0; next} inb{n++; if($0==e){if(n<=cap+1)ok=1; inb=0}} END{exit !ok}' \
-        "$1" 2>/dev/null
+
+# True when file $4 holds a closed start..end block with at most cap body lines.
+_block_has_closed() {
+    awk -v s="$1" -v e="$2" -v cap="$3" '
+        $0 == s { inb = 1; n = 0; next }
+        inb { n++; if ($0 == e) { if (n <= cap + 1) ok = 1; inb = 0 } }
+        END { exit !ok }
+    ' "$4" 2>/dev/null
 }
-setup_neofetch_init() {
+
+setup_fastfetch_init() {
     if [ -z "${BASH_VERSION:-}" ]; then
-        warn "Installer is not running under bash; skipping neofetch shell init sync"
+        warn "Installer is not running under bash; skipping fastfetch shell init sync"
         return 0
     fi
 
-    local start_marker='# >>> neofetch on Termux start >>>'
-    local end_marker='# <<< neofetch on Termux start <<<'
-    local f removed=0
+    local f legacy_kept=0
+    # Migration: the v0.9 neofetch block goes whatever is installed. If it cannot
+    # be removed from the profile, fastfetch is not appended on top of it, so
+    # two auto-runs never stack.
+    for f in "$BASH_PROFILE" "$BASHRC"; do
+        if [ -f "$f" ] && grep -qxF "$NEOFETCH_LEGACY_START" "$f" 2>/dev/null; then
+            if rc_rewrite "$f" _block_strip_filter "$NEOFETCH_LEGACY_START" "$NEOFETCH_LEGACY_END" \
+                "$FASTFETCH_BLOCK_CAP" "$NEOFETCH_SNIPPET_RE"; then
+                info "Replaced neofetch init in $f (neofetch is no longer managed)"; RC_CHANGED=1
+            elif [ "$f" = "$BASH_PROFILE" ]; then
+                legacy_kept=1
+            fi
+        fi
+    done
 
-    if ! command -v neofetch >/dev/null 2>&1; then
+    if ! command -v fastfetch >/dev/null 2>&1; then
+        local removed=0
         for f in "$BASH_PROFILE" "$BASHRC"; do
-            if [ -f "$f" ] && grep -qxF "$start_marker" "$f" 2>/dev/null; then
-                rc_rewrite "$f" _neofetch_strip_filter \
-                    && { info "Removed neofetch init from $f (neofetch not installed)"; RC_CHANGED=1; }
+            if [ -f "$f" ] && grep -qxF "$FASTFETCH_START" "$f" 2>/dev/null; then
+                rc_rewrite "$f" _block_strip_filter "$FASTFETCH_START" "$FASTFETCH_END" \
+                    "$FASTFETCH_BLOCK_CAP" "$FASTFETCH_SNIPPET_RE" \
+                    && { info "Removed fastfetch init from $f (fastfetch not installed)"; RC_CHANGED=1; }
                 removed=1
             fi
         done
         if [ "$removed" -eq 0 ]; then
-            info "Neofetch not installed; nothing to clean up"
+            info "Fastfetch not installed; nothing to clean up"
         fi
         return 0
     fi
 
-    # Drop any stale copy in .bashrc: profile-only from now on.
-    if [ -f "$BASHRC" ] && grep -qxF "$start_marker" "$BASHRC" 2>/dev/null; then
-        rc_rewrite "$BASHRC" _neofetch_strip_filter \
-            && { info "Removed stale neofetch init from $BASHRC (profile-only now)"; RC_CHANGED=1; }
+    # Profile-only from now on: drop a stale copy from ~/.bashrc.
+    if [ -f "$BASHRC" ] && grep -qxF "$FASTFETCH_START" "$BASHRC" 2>/dev/null; then
+        rc_rewrite "$BASHRC" _block_strip_filter "$FASTFETCH_START" "$FASTFETCH_END" \
+            "$FASTFETCH_BLOCK_CAP" "$FASTFETCH_SNIPPET_RE" \
+            && { info "Removed stale fastfetch init from $BASHRC (profile-only now)"; RC_CHANGED=1; }
     fi
 
     f="$BASH_PROFILE"
-    if _neofetch_has_closed_block "$f"; then
-        info "Neofetch init already present in $f"
+    if _block_has_closed "$FASTFETCH_START" "$FASTFETCH_END" "$FASTFETCH_BLOCK_CAP" "$f"; then
+        info "Fastfetch init already present in $f"
     else
-        if [ -f "$f" ] && grep -qxF "$start_marker" "$f" 2>/dev/null; then
-            # An unclosed/legacy block: try to clean it first. If the rewrite
-            # is refused (filter output failed bash -n), leave the file as it
-            # was — appending would stack a second block on the broken one.
-            if ! rc_rewrite "$f" _neofetch_strip_filter; then
-                warn "Could not clean the existing neofetch block in $f; leaving it untouched"
+        if [ "$legacy_kept" -eq 1 ]; then
+            warn "Old neofetch block in $f could not be removed; not adding fastfetch on top of it"
+            return 0
+        fi
+        if [ -f "$f" ] && grep -qxF "$FASTFETCH_START" "$f" 2>/dev/null; then
+            # Unclosed fastfetch block from an earlier run: clean it first.
+            if ! rc_rewrite "$f" _block_strip_filter "$FASTFETCH_START" "$FASTFETCH_END" \
+                "$FASTFETCH_BLOCK_CAP" "$FASTFETCH_SNIPPET_RE"; then
+                warn "Could not clean the existing fastfetch block in $f; leaving it untouched"
                 return 0
             fi
         else
@@ -2026,19 +2051,18 @@ setup_neofetch_init() {
         fi
         [ -e "$f" ] || : >"$f"
         {
-            printf '\n%s\n' "$start_marker"
+            printf '\n%s\n' "$FASTFETCH_START"
             # shellcheck disable=SC2016  # literal snippet for the rc files, must not expand
-            printf '%s\n' 'if [[ $- == *i* ]] && command -v neofetch >/dev/null 2>&1; then'
+            printf '%s\n' 'if [[ $- == *i* ]] && command -v fastfetch >/dev/null 2>&1; then'
             # shellcheck disable=SC2016
-            printf '%s\n' '  neofetch --off'
+            printf '%s\n' '  fastfetch -l none'
             printf '%s\n' 'fi'
-            printf '%s\n' "$end_marker"
+            printf '%s\n' "$FASTFETCH_END"
         } >>"$f"
-        info "Added neofetch init to $f"; RC_CHANGED=1
+        info "Added fastfetch init to $f"; RC_CHANGED=1
     fi
-    ok "neofetch -> $(command -v neofetch)"
+    ok "fastfetch -> $(command -v fastfetch)"
 }
-
 install_pkg_tools() {
     # The probe runs before the menu; for non-menu runs (-y / no TTY /
     # short terminal) PKG_STATUS is empty, so probe here to know the state.
@@ -2728,14 +2752,14 @@ main() {
     announce "Starting installation - packages are downloaded and some are built from source; the display can pause for a while. Please wait..."
     # Shell snippet sync, unconditional on every run including cleanup-only:
     # binary present -> snippet ensured; binary absent -> snippet removed so
-    # uninstalled tools leave no trace. Starship syncs both rc files; neofetch
+    # uninstalled tools leave no trace. Starship syncs both rc files; fastfetch
     # is profile-only. The syncs set RC_CHANGED=1 when they add or remove
     # anything, so main can mark the moment with a step header only when
     # needed. (A second pass after the install stages re-adds snippets for
     # tools installed during this run.)
     RC_CHANGED=0
     setup_starship_init
-    setup_neofetch_init
+    setup_fastfetch_init
     if [ "$RC_CHANGED" -eq 1 ]; then
         sync_step "Shell snippets synced"
         RC_CHANGED=0
@@ -2771,7 +2795,7 @@ main() {
     # their snippets (the early sync only handled removals + pre-installed).
     RC_CHANGED=0
     setup_starship_init
-    setup_neofetch_init
+    setup_fastfetch_init
     if [ "$RC_CHANGED" -eq 1 ]; then
         sync_step "Shell snippets synced"
     fi

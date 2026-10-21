@@ -87,7 +87,7 @@ toggles are listed last.
 | elinks     | elinks - text-mode web browser                      | `elinks`            |
 | golang     | golang - Go toolchain; GOPATH/bin on PATH           | `golang`            |
 | mc         | mc - Midnight Commander                             | `mc`                |
-| neofetch   | neofetch - system info                              | `neofetch`          |
+| fastfetch  | fastfetch - system info (replaces neofetch)         | `fastfetch`         |
 | ranger     | ranger - console file manager                       | `ranger`            |
 | rust       | rust - Rust toolchain (jiter/pydantic-core)         | `rust binutils`     |
 | shellcheck | shellcheck - shell script static analysis           | `shellcheck`        |
@@ -127,26 +127,41 @@ command -v starship`) are upgraded in place. If starship is not installed
 shells stay clean. The sync only runs when the installer itself runs under
 bash.
 
-When `neofetch` is installed, the installer keeps its auto-run snippet in
+When `fastfetch` is installed, the installer keeps its login snippet in
 sync in `~/.bash_profile` ONLY — not `~/.bashrc`, since zellij sources
-`.bashrc` for every pane/tab and would re-run neofetch each time, while
+`.bashrc` for every pane/tab and would re-run it each time, while
 `.bash_profile` runs once per login shell. No guard variable is needed. The
-snippet runs `neofetch --off` in interactive shells:
+snippet runs `fastfetch -l none` (text only, no logo) in interactive shells:
 
 ```bash
-# >>> neofetch on Termux start >>>
-if [[ $- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
-  neofetch --off
+# >>> fastfetch on Termux start >>>
+if [[ $- == *i* ]] && command -v fastfetch >/dev/null 2>&1; then
+  fastfetch -l none
 fi
-# <<< neofetch on Termux start <<<
+# <<< fastfetch on Termux start <<<
 ```
 
-If neofetch is not installed (e.g. the user uninstalled it and did not select
-it), the snippet is removed from `.bash_profile` (plus any stale copy in
-`.bashrc`). The sync also repairs the legacy variant found in the wild, which
-lacks the closing `fi`. Only runs when the installer itself runs under bash.
+If fastfetch is not installed, the snippet is removed from `.bash_profile`
+(plus any stale copy in `.bashrc`). The sync also repairs an unclosed variant
+that lacks the closing `fi`. Only runs when the installer itself runs under
+bash.
 
-The starship and neofetch syncs run on **every** run, including cleanup-only
+### Replacing neofetch
+
+`fastfetch` replaces the v0.9 `neofetch` component. The installer never
+uninstalls packages, so on an existing setup:
+
+- the old neofetch snippet (`# >>> neofetch on Termux start >>>`) is removed
+  from both `~/.bash_profile` and `~/.bashrc` on the next run, whatever is
+  installed — neofetch is no longer managed;
+- if `neofetch` is still installed and you no longer want it, remove it
+  yourself with `pkg uninstall neofetch`;
+- selecting the new `fastfetch` row installs the `fastfetch` package and adds
+  the snippet above.
+
+### Snippet sync passes
+
+The starship and fastfetch syncs run on **every** run, including cleanup-only
 runs (nothing selected but `cleanup`). A second pass runs after the install
 stages so snippets are added for tools installed during the same run. When a
 sync adds or removes a snippet, a cyan `Shell snippets synced` header marks

@@ -82,6 +82,11 @@ as 0.9.
 - `python-pip` as an explicit base dependency (replaces `ensurepip`).
 - Connectivity pre-check gating red verdicts (offline never paints false
   reds).
+- `fastfetch` pkg component (system info) with a login snippet running
+  `fastfetch -l none` in `~/.bash_profile`.
+- Shared `_block_strip_filter` / `_block_has_closed` helpers: one
+  marker-delimited block remover used for both the fastfetch snippet and the
+  legacy neofetch migration.
 
 ### Changed
 
@@ -111,6 +116,16 @@ as 0.9.
   cursor row.
 - Install instructions use `$TMPDIR` (Termux has no writable `/tmp`) and
   lead with the `bash <(curl …)` one-liner.
+
+### Removed
+
+- `neofetch` pkg component, replaced by `fastfetch`. The installer never
+  uninstalls packages, so an existing `neofetch` binary stays until the user
+  removes it (`pkg uninstall neofetch`); its `.bash_profile`/`.bashrc`
+  snippet is removed automatically on the next run.
+- `NEOFETCH_BLOCK_CAP` / `setup_neofetch_init` / `_neofetch_strip_filter` /
+  `_neofetch_has_closed_block`, superseded by the generic block helpers and
+  the `FASTFETCH_*` / `NEOFETCH_LEGACY_*` constants.
 
 ### Fixed
 

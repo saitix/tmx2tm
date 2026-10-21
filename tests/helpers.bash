@@ -29,18 +29,25 @@ load_functions() {
     source "$dest"
 }
 
+# Read named config constants from tmx2tm.sh (single source of truth) and
+# define them in the test shell. Fails loudly when a constant is missing.
+load_constants() {
+    local name line
+    for name in "$@"; do
+        line=$(grep -m1 "^${name}=" "$TMX2TM_SH") || {
+            echo "load_constants: '$name' not found in tmx2tm.sh" >&2
+            return 1
+        }
+        eval "$line"
+    done
+}
+
 # Stubs so the extracted functions run outside the installer.
 setup_stubs() {
     C_RESET=""; C_BLUE=""; C_DIM=""; C_OK=""; C_WARN=""
     C_HL=""; C_KEY=""; C_ERR=""; C_PURPLE=""; C_YELLOW=""
     TEMP_PATHS=()
     declare -gA RC_BACKED_UP=()
-    # Config constants the functions reference: read the real values from
-    # tmx2tm.sh so tests always match the script instead of a copy.
-    local line
-    line=$(grep '^NEOFETCH_BLOCK_CAP=' "$TMX2TM_SH" | head -1)
-    # shellcheck disable=SC2163
-    [ -n "$line" ] && eval "export $line"
-    TP_WHY_DANGLING=$(grep '^TP_WHY_DANGLING=' "$TMX2TM_SH" | head -1 | cut -d= -f2- | tr -d '"')
-    export TP_WHY_DANGLING
+    load_constants TP_WHY_DANGLING FASTFETCH_START FASTFETCH_END FASTFETCH_BLOCK_CAP \
+        FASTFETCH_SNIPPET_RE NEOFETCH_LEGACY_START NEOFETCH_LEGACY_END NEOFETCH_SNIPPET_RE
 }

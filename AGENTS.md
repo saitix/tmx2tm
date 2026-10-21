@@ -51,8 +51,12 @@ Minimal instructions for agents working in this repo.
      if installed` + `declare -F starship_precmd` guard (older
      `STARSHIP_START_TIME` and legacy `if command -v starship` forms are
      recognized by the strip filter and upgraded).
-   - `setup_neofetch_init` syncs its block in `~/.bash_profile` ONLY
-     (zellij would re-run a `.bashrc` copy per tab).
+   - `setup_fastfetch_init` syncs its block in `~/.bash_profile` ONLY
+     (zellij would re-run a `.bashrc` copy per tab). It also removes the v0.9
+     neofetch block (markers `NEOFETCH_LEGACY_*`) from both files on every
+     run: fastfetch replaced neofetch, and the installer never uninstalls
+     packages. Both blocks are handled by the shared `_block_strip_filter` /
+     `_block_has_closed` with per-block constants from the config block.
    - ALL rc-file rewrites (not just appends) MUST go through `rc_rewrite`
      (with `rc_backup` snapshots to `<file>.tmx2tm.bak`): it validates the
      result with `bash -n` and writes back in place so symlinks survive.

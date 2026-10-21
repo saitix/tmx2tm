@@ -2,13 +2,13 @@ load helpers
 
 setup() {
     rm -rf "$BATS_TMPDIR/t"; mkdir -p "$BATS_TMPDIR/t"
-    load_functions _starship_strip_filter _neofetch_strip_filter \
-        _neofetch_has_closed_block rc_backup rc_rewrite register_temp \
-        info warn
+    load_functions _starship_strip_filter _block_strip_filter _block_has_closed \
+        rc_backup rc_rewrite register_temp info warn
     setup_stubs
 }
 
-filter() { printf '%s' "$1" | "$2"; }
+# filter <input> <function> [args...]: run a filter on the input text.
+filter() { local in="$1"; shift; printf '%s' "$in" | "$@"; }
 
 assert_syntax() { bash -n "$1"; }
 
@@ -159,77 +159,184 @@ echo bottom
     [ "$once" = "$twice" ]
 }
 
-# ---------------- neofetch ----------------
+# ---------------- fastfetch block ----------------
 
-NEO_START='# >>> neofetch on Termux start >>>'
-NEO_END='# <<< neofetch on Termux start <<<'
+ff_filter() { filter "$1" _block_strip_filter "$FASTFETCH_START" "$FASTFETCH_END" "$FASTFETCH_BLOCK_CAP" "$FASTFETCH_SNIPPET_RE"; }
 
-@test "neofetch: closed installer block is removed" {
-    input="$NEO_START
-if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
-  neofetch --off
+@test "fastfetch: closed block is removed" {
+    input=$(cat <<EOF
+echo before
+$FASTFETCH_START
+if [[ \$- == *i* ]] && command -v fastfetch >/dev/null 2>&1; then
+  fastfetch -l none
 fi
-$NEO_END
-"
-    printf '%s' "$input" >"$BATS_TMPDIR/t/in"
-    run _neofetch_has_closed_block "$BATS_TMPDIR/t/in"
-    [ "$status" -eq 0 ]
-    run filter "$input" _neofetch_strip_filter
-    [ "$status" -eq 0 ]
-    ! printf '%s' "$output" | grep -q 'neofetch on Termux'
-    printf '%s' "$output" >"$BATS_TMPDIR/t/out"
-    run _neofetch_has_closed_block "$BATS_TMPDIR/t/out"
-    [ "$status" -ne 0 ]
-    bash -n "$BATS_TMPDIR/t/out"
-}
-
-@test "neofetch: long edited closed block is removed whole" {
-    input="echo before
-$NEO_START
-if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
-  neofetch --off
-  echo custom1
-  echo custom2
-  if [ -n \"\$X\" ]; then
-    echo nested
-  fi
-fi
-$NEO_END
+$FASTFETCH_END
 echo after
-"
-    run filter "$input" _neofetch_strip_filter
+EOF
+)
+    printf '%s\n' "$input" >"$BATS_TMPDIR/t/in"
+    run _block_has_closed "$FASTFETCH_START" "$FASTFETCH_END" "$FASTFETCH_BLOCK_CAP" "$BATS_TMPDIR/t/in"
+    [ "$status" -eq 0 ]
+    run ff_filter "$input"
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
     grep -q 'echo before' "$BATS_TMPDIR/t/out"
     grep -q 'echo after' "$BATS_TMPDIR/t/out"
-    ! grep -q 'neofetch on Termux' "$BATS_TMPDIR/t/out"
+    ! grep -q 'fastfetch' "$BATS_TMPDIR/t/out"
+    bash -n "$BATS_TMPDIR/t/out"
+    run _block_has_closed "$FASTFETCH_START" "$FASTFETCH_END" "$FASTFETCH_BLOCK_CAP" "$BATS_TMPDIR/t/out"
+    [ "$status" -ne 0 ]
+}
+
+@test "fastfetch: long edited closed block is removed whole" {
+    input=$(cat <<EOF
+echo before
+$FASTFETCH_START
+if [[ \$- == *i* ]] && command -v fastfetch >/dev/null 2>&1; then
+  fastfetch -l none
+  echo custom1
+  echo custom2
+  if [ -n "\$X" ]; then
+    echo nested
+  fi
+fi
+$FASTFETCH_END
+echo after
+EOF
+)
+    run ff_filter "$input"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
+    grep -q 'echo before' "$BATS_TMPDIR/t/out"
+    grep -q 'echo after' "$BATS_TMPDIR/t/out"
     ! grep -q 'custom1' "$BATS_TMPDIR/t/out"
+    ! grep -q 'fastfetch on Termux' "$BATS_TMPDIR/t/out"
     bash -n "$BATS_TMPDIR/t/out"
 }
 
-@test "neofetch: legacy unclosed block keeps user if-block" {
-    input="$NEO_START
-if [[ \$- == *i* && -z \"\$NEOFETCH_SHOWN\" ]] && command -v neofetch >/dev/null 2>&1; then
+@test "fastfetch: two closed blocks back to back both removed" {
+    input=$(cat <<EOF
+echo before
+$FASTFETCH_START
+if [[ \$- == *i* ]] && command -v fastfetch >/dev/null 2>&1; then
+  fastfetch -l none
+fi
+$FASTFETCH_END
+$FASTFETCH_START
+if [[ \$- == *i* ]] && command -v fastfetch >/dev/null 2>&1; then
+  fastfetch -l none
+fi
+$FASTFETCH_END
+echo after
+EOF
+)
+    run ff_filter "$input"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
+    grep -q 'echo before' "$BATS_TMPDIR/t/out"
+    grep -q 'echo after' "$BATS_TMPDIR/t/out"
+    ! grep -q 'fastfetch on Termux' "$BATS_TMPDIR/t/out"
+    bash -n "$BATS_TMPDIR/t/out"
+}
+
+@test "fastfetch: end marker beyond cap leaves file untouched" {
+    input="$FASTFETCH_START
+$(for i in $(seq 1 30); do echo "echo filler$i"; done)
+$FASTFETCH_END
+"
+    run ff_filter "$input"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf '%s' "$input")" ]
+}
+
+@test "fastfetch: no markers passes through" {
+    input='echo hello
+alias ll="ls -l"
+'
+    run ff_filter "$input"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf '%s' "$input")" ]
+}
+
+@test "fastfetch: idempotent" {
+    input=$(cat <<EOF
+echo top
+$FASTFETCH_START
+if [[ \$- == *i* ]] && command -v fastfetch >/dev/null 2>&1; then
+  fastfetch -l none
+fi
+$FASTFETCH_END
+echo bottom
+EOF
+)
+    once=$(ff_filter "$input")
+    twice=$(ff_filter "$once")
+    [ "$once" = "$twice" ]
+}
+
+@test "fastfetch: filter leaves a v0.9 neofetch block alone" {
+    input=$(cat <<EOF
+$NEOFETCH_LEGACY_START
+if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
+  neofetch --off
+fi
+$NEOFETCH_LEGACY_END
+EOF
+)
+    run ff_filter "$input"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$input" ]
+}
+
+# ---------------- legacy v0.9 neofetch block (migration) ----------------
+
+nf_filter() { filter "$1" _block_strip_filter "$NEOFETCH_LEGACY_START" "$NEOFETCH_LEGACY_END" "$FASTFETCH_BLOCK_CAP" "$NEOFETCH_SNIPPET_RE"; }
+
+@test "legacy neofetch: closed v0.9 block is removed" {
+    input=$(cat <<EOF
+echo before
+$NEOFETCH_LEGACY_START
+if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
+  neofetch --off
+fi
+$NEOFETCH_LEGACY_END
+echo after
+EOF
+)
+    run nf_filter "$input"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
+    grep -q 'echo before' "$BATS_TMPDIR/t/out"
+    grep -q 'echo after' "$BATS_TMPDIR/t/out"
+    ! grep -q 'neofetch' "$BATS_TMPDIR/t/out"
+    bash -n "$BATS_TMPDIR/t/out"
+}
+
+@test "legacy neofetch: unclosed block keeps user if-block" {
+    input=$(cat <<EOF
+$NEOFETCH_LEGACY_START
+if [[ \$- == *i* && -z "\$NEOFETCH_SHOWN" ]] && command -v neofetch >/dev/null 2>&1; then
   neofetch --off
   export NEOFETCH_SHOWN=1
 if [ -f ~/u ]; then
   echo user
 fi
-"
-    run filter "$input" _neofetch_strip_filter
+EOF
+)
+    run nf_filter "$input"
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
     grep -q 'echo user' "$BATS_TMPDIR/t/out"
-    ! grep -q 'neofetch on Termux' "$BATS_TMPDIR/t/out"
+    ! grep -q 'neofetch' "$BATS_TMPDIR/t/out"
     bash -n "$BATS_TMPDIR/t/out"
 }
 
-@test "neofetch: unrelated lines after bare marker survive" {
-    input="$NEO_START
+@test "legacy neofetch: unrelated lines after bare marker survive" {
+    input="$NEOFETCH_LEGACY_START
 alias ll=\"ls -l\"
 export EDITOR=vim
 "
-    run filter "$input" _neofetch_strip_filter
+    run nf_filter "$input"
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
     grep -q 'alias ll=' "$BATS_TMPDIR/t/out"
@@ -237,80 +344,26 @@ export EDITOR=vim
     bash -n "$BATS_TMPDIR/t/out"
 }
 
-@test "neofetch: end marker beyond cap leaves file untouched" {
-    input="$NEO_START
-$(for i in $(seq 1 30); do echo "echo filler$i"; done)
-$NEO_END
-"
-    run filter "$input" _neofetch_strip_filter
-    [ "$status" -eq 0 ]
-    [ "$output" = "$(printf '%s' "$input")" ]
-}
-
-@test "neofetch: no markers passes through" {
-    input='echo hello
-'
-    run filter "$input" _neofetch_strip_filter
-    [ "$status" -eq 0 ]
-    [ "$output" = "$(printf '%s' "$input")" ]
-}
-
-@test "neofetch: idempotent" {
-    input="echo top
-$NEO_START
-if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
-  neofetch --off
-fi
-$NEO_END
-echo bottom
-"
-    once=$(filter "$input" _neofetch_strip_filter)
-    twice=$(filter "$once" _neofetch_strip_filter)
-    [ "$once" = "$twice" ]
-}
-
-@test "neofetch: legacy block then closed block keeps user lines" {
-    input="$NEO_START
+@test "legacy neofetch: unclosed block then closed block keeps user lines" {
+    input=$(cat <<EOF
+$NEOFETCH_LEGACY_START
 if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
   neofetch --off
 export USERVAR=1
 alias keep=me
-$NEO_START
+$NEOFETCH_LEGACY_START
 if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
   neofetch --off
 fi
-$NEO_END
-"
-    run filter "$input" _neofetch_strip_filter
+$NEOFETCH_LEGACY_END
+EOF
+)
+    run nf_filter "$input"
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
     grep -q 'USERVAR=1' "$BATS_TMPDIR/t/out"
     grep -q 'alias keep=me' "$BATS_TMPDIR/t/out"
-    ! grep -q 'neofetch on Termux' "$BATS_TMPDIR/t/out"
-    ! grep -q 'neofetch --off' "$BATS_TMPDIR/t/out"
-    bash -n "$BATS_TMPDIR/t/out"
-}
-
-@test "neofetch: two closed blocks back to back both removed" {
-    input="echo before
-$NEO_START
-if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
-  neofetch --off
-fi
-$NEO_END
-$NEO_START
-if [[ \$- == *i* ]] && command -v neofetch >/dev/null 2>&1; then
-  neofetch --off
-fi
-$NEO_END
-echo after
-"
-    run filter "$input" _neofetch_strip_filter
-    [ "$status" -eq 0 ]
-    printf '%s\n' "$output" >"$BATS_TMPDIR/t/out"
-    grep -q 'echo before' "$BATS_TMPDIR/t/out"
-    grep -q 'echo after' "$BATS_TMPDIR/t/out"
-    ! grep -q 'neofetch on Termux' "$BATS_TMPDIR/t/out"
+    ! grep -q 'neofetch' "$BATS_TMPDIR/t/out"
     bash -n "$BATS_TMPDIR/t/out"
 }
 
